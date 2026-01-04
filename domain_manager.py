@@ -23,7 +23,10 @@ def initialize_folders():
     """봇 실행에 필요한 데이터 폴더들을 초기화합니다."""
     for path in [SESSIONS_DIR, LORE_DIR, RULES_DIR]:
         if not os.path.exists(path):
-            os.makedirs(path)
+            try:
+                os.makedirs(path)
+            except Exception as e:
+                logging.error(f"폴더 생성 실패 {path}: {e}")
 
 def get_session_file_path(channel_id):
     return os.path.join(SESSIONS_DIR, f"{channel_id}.json")
@@ -164,6 +167,28 @@ def get_active_participants_summary(channel_id):
         summary_parts.append(f"{p['mask']}{status_tag}")
     return ", ".join(summary_parts) if summary_parts else "None"
 
+def get_party_status_context(channel_id):
+    """
+    [신규] world_manager에서 호출하는 파티 상태 요약 함수
+    파티의 체력, 스트레스, 상태이상을 요약하여 반환합니다.
+    """
+    d = get_domain(channel_id)
+    parts = []
+    for uid, p in d["participants"].items():
+        if p.get("status") == "left": continue
+        
+        mask = p.get("mask", "Unknown")
+        stats = p.get("stats", {})
+        stress = stats.get("스트레스", 0)
+        effects = p.get("status_effects", [])
+        
+        status_str = f"{mask}(Stress: {stress})"
+        if effects:
+            status_str += f" [Effects: {', '.join(effects)}]"
+        parts.append(status_str)
+        
+    return " | ".join(parts) if parts else "No active party members."
+
 # =========================================================
 # 데이터 접근자 (Getters & Setters)
 # =========================================================
@@ -238,6 +263,15 @@ def append_lore(channel_id, text):
     with open(path, 'w', encoding='utf-8') as f:
         f.write(f"{cur}\n{text}".strip())
 
+def reset_lore(channel_id):
+    """[신규] 로어 파일을 삭제하여 기본값으로 되돌립니다."""
+    path = get_lore_file_path(channel_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as e:
+            logging.error(f"로어 초기화 실패: {e}")
+
 def get_rules(channel_id):
     path = get_rules_file_path(channel_id)
     if os.path.exists(path):
@@ -250,6 +284,15 @@ def append_rules(channel_id, text):
     cur = get_rules(channel_id) if os.path.exists(path) else ""
     with open(path, 'w', encoding='utf-8') as f:
         f.write(f"{cur}\n{text}".strip())
+
+def reset_rules(channel_id):
+    """[신규] 룰 파일을 삭제하여 기본값으로 되돌립니다."""
+    path = get_rules_file_path(channel_id)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception as e:
+            logging.error(f"룰 초기화 실패: {e}")
 
 def append_history(channel_id, role, content):
     """대화 기록을 세션 데이터에 추가합니다 (최근 40개 유지)."""
