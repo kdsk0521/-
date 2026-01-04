@@ -2,35 +2,31 @@ from google.genai import types
 import logging
 
 # =========================================================
-# [프롬프트] NVC + 시스템 액션 (상태/관계 감지 추가)
+# [프롬프트] NVC + 시스템 액션 (AI 자동 메모 관리 지침 강화)
 # =========================================================
 NVC_ANALYSIS_PROMPT = """
-[Instruction]
-Analyze the interaction. Internal thought process for AI Game Master.
-Check provided **Rules/Lore** to validate actions.
+[GM Internal Brain: NVC & Action Detection]
 
-1. **Observation**: What happened?
-2. **Feeling**: AI Emotion.
-3. **Need**: AI Value.
-4. **Request**: What does AI want players to do?
-5. **SystemAction**: Detect specific game mechanics from user input.
+You are analyzing the narrative to manage game state and NPC logic.
+
+1. **Observation**: What is the current narrative situation?
+2. **Feeling**: Your emotional tone as a GM.
+3. **Need**: What narrative goal are you pursuing?
+4. **SystemAction**: Detect and trigger game mechanics.
    - **None**: No mechanic.
-   - **Rest**: Character rests.
-   - **CollectTaxes**: Collect taxes.
-   - **Construct**: Build facility. (Format: `Construct | Name: <Name> | Cost: <Gold> | Effect: <Desc>`)
-   - **InventoryAction**: Item usage/gain. (Format: `InventoryAction | Type: <Add/Remove> | Item: <Name> | Count: <N>`)
-   - **QuestAction**: Manage quests. (Format: `QuestAction | Type: <Add/Complete> | Content: <Text>`)
-   - **MemoAction**: Manage memos. (Format: `MemoAction | Type: <Add/Remove> | Content: <Text>`)
-   - **StatusAction**: Apply/Remove status effect.
-     * Format: `StatusAction | Type: <Add/Remove> | Effect: <EffectName>`
-   - **RelationAction**: Change relationship.
-     * Format: `RelationAction | Target: <NPC/Faction> | Amount: <+/- Number>`
+   - **MemoAction**: AUTOMATICALLY manage the Memo Pad.
+     * **Add**: If a new important clue, NPC name, or task is discovered.
+     * **Remove**: If a task is COMPLETED, a clue is solved, or a note is no longer relevant.
+     * Format: `MemoAction | Type: <Add/Remove> | Content: <Text>`
+   - **QuestAction**: Manage major story goals.
+     * Format: `QuestAction | Type: <Add/Complete> | Content: <Text>`
+   - **StatusAction**: Add/Remove status effects like 'Injured', 'Exhausted'.
+     * Format: `StatusAction | Type: <Add/Remove> | Effect: <Name>`
 
 [Output Format]
 Observation: ...
 Feeling: ...
 Need: ...
-Request: ...
 SystemAction: ...
 """
 
@@ -39,50 +35,25 @@ async def analyze_context_nvc(client, model_id, history_text, lore_text, rule_te
         f"{NVC_ANALYSIS_PROMPT}\n\n"
         f"[World Lore]\n{lore_text[:500]}...\n\n"
         f"[Game Rules]\n{rule_text[:1000]}...\n\n"
-        f"[Recent Interaction]\n{history_text}"
+        f"[Interaction]\n{history_text}"
     )
-
     try:
         response = client.models.generate_content(
             model=model_id,
             contents=full_prompt,
             config=types.GenerateContentConfig(temperature=0.1)
         )
-        
-        result_text = response.text
-        parsed_data = parse_nvc_result(result_text)
-        return parsed_data
-        
+        return parse_nvc_result(response.text)
     except Exception as e:
-        logging.error(f"NVC Analysis Failed: {e}")
-        return None
+        logging.error(f"NVC Error: {e}")
+        return {"SystemAction": "None"}
 
 def parse_nvc_result(text):
-    data = {"Observation": None, "Feeling": None, "Need": None, "Request": None, "SystemAction": "None"}
-    
-    current_key = None
+    data = {"Observation": "", "Feeling": "", "Need": "", "SystemAction": "None"}
     lines = text.split('\n')
-    
     for line in lines:
-        line = line.strip()
-        if not line: continue
-        
-        if line.startswith("Observation:"):
-            current_key = "Observation"
-            data[current_key] = line.replace("Observation:", "").strip()
-        elif line.startswith("Feeling:"):
-            current_key = "Feeling"
-            data[current_key] = line.replace("Feeling:", "").strip()
-        elif line.startswith("Need:"):
-            current_key = "Need"
-            data[current_key] = line.replace("Need:", "").strip()
-        elif line.startswith("Request:"):
-            current_key = "Request"
-            data[current_key] = line.replace("Request:", "").strip()
-        elif line.startswith("SystemAction:"):
-            current_key = "SystemAction"
-            data[current_key] = line.replace("SystemAction:", "").strip()
-        elif current_key:
-            data[current_key] += " " + line
-            
+        if line.startswith("Observation:"): data["Observation"] = line.replace("Observation:", "").strip()
+        elif line.startswith("Feeling:"): data["Feeling"] = line.replace("Feeling:", "").strip()
+        elif line.startswith("Need:"): data["Need"] = line.replace("Need:", "").strip()
+        elif line.startswith("SystemAction:"): data["SystemAction"] = line.replace("SystemAction:", "").strip()
     return data

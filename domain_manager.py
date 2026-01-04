@@ -72,6 +72,11 @@ def get_domain(channel_id):
                 for key, val in defaults.items():
                     if key not in data:
                         data[key] = val
+                
+                # [호환성] quest_board 내부에 archive 리스트가 없으면 추가
+                if "quest_board" in data and "archive" not in data["quest_board"]:
+                    data["quest_board"]["archive"] = []
+
                 return data
         except Exception as e:
             logging.error(f"세션 로드 실패 ({channel_id}): {e}")
@@ -87,7 +92,7 @@ def _create_new_domain():
             "mode": "auto",              
             "growth_system": "standard", 
             "session_locked": False,
-            "bot_disabled": False  # [신규] 해당 채널에서 봇 비활성화 여부
+            "bot_disabled": False
         },
         "fief": {             
             "name": "시작의 영지", "gold": 1000, "supplies": 100, 
@@ -106,31 +111,28 @@ def _create_new_domain():
         },
         "quest_board": {
             "active": [],
-            "memo": []
+            "memo": [],
+            "archive": [] # 완료된 메모 보관함
         }
     }
 
 def save_domain(channel_id, data):
-# --- [신규] 봇 활성화/비활성화 설정 ---
+    try:
+        with open(get_session_file_path(channel_id), 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"세션 저장 실패: {e}")
+
+# --- 봇 활성화/비활성화 설정 ---
 def set_bot_disabled(channel_id, disabled):
-    """
-    해당 채널에서 봇의 응답을 활성화(False)하거나 비활성화(True)합니다.
-    """
     d = get_domain(channel_id)
     d["settings"]["bot_disabled"] = disabled
     save_domain(channel_id, d)
     return disabled
 
 def is_bot_disabled(channel_id):
-    """
-    해당 채널이 비활성화 상태인지 확인합니다.
-    """
-    return get_domain(channel_id)["settings"].get("bot_disabled", False)
-
-        with open(get_session_file_path(channel_id), 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.error(f"세션 저장 실패: {e}")
+    d = get_domain(channel_id)
+    return d["settings"].get("bot_disabled", False)
 
 # =========================================================
 # [함수] 데이터 조작
@@ -189,26 +191,21 @@ def is_session_locked(channel_id): return get_domain(channel_id)["settings"].get
 # --- 참가자 관리 ---
 def update_participant(channel_id, user):
     d = get_domain(channel_id); uid = str(user.id)
-    
     if uid in d["participants"]:
         p = d["participants"][uid]
         p["count"] += 1; p["name"] = user.display_name
         if p.get("status") == "away": p["status"] = "active"
         if "inventory" not in p: p["inventory"] = {}
-        # [신규] 상태이상 리스트 추가
         if "status_effects" not in p: p["status_effects"] = []
+        if "description" not in p: p["description"] = "" 
         save_domain(channel_id, d); return True
-
     if d["settings"].get("session_locked", False): return False
-    
     d["participants"][uid] = {
         "name": user.display_name, "mask": user.display_name, "count": 1, 
         "level": 1, "xp": 0, "next_xp": 100, 
         "stats": {"근력":10,"지능":10,"매력":10,"스트레스":0}, 
-        "relations":{}, 
-        "inventory":{}, 
-        "status_effects": [], # [신규] 상태이상 리스트
-        "status":"active"
+        "relations":{}, "inventory":{}, "status_effects": [],
+        "description": "", "status":"active"
     }
     save_domain(channel_id, d); return True
 
@@ -223,11 +220,13 @@ def join_participant(channel_id, uid, user_name):
         d["participants"][uid]["status"] = "active"; d["participants"][uid]["name"] = user_name
         if "inventory" not in d["participants"][uid]: d["participants"][uid]["inventory"] = {}
         if "status_effects" not in d["participants"][uid]: d["participants"][uid]["status_effects"] = []
+        if "description" not in d["participants"][uid]: d["participants"][uid]["description"] = ""
         save_domain(channel_id, d); return d["participants"][uid]["mask"], False
     else:
         d["participants"][uid] = {
             "name": user_name, "mask": user_name, "count": 0, "level": 1, "xp": 0, "next_xp": 100,
-            "stats": {"근력":10,"지능":10,"매력":10,"스트레스":0}, "relations":{}, "inventory":{}, "status_effects": [], "status":"active"
+            "stats": {"근력":10,"지능":10,"매력":10,"스트레스":0}, "relations":{}, "inventory":{}, "status_effects": [], 
+            "description": "", "status":"active"
         }
         save_domain(channel_id, d); return user_name, True
 
@@ -242,62 +241,56 @@ def set_user_mask(channel_id, uid, mask):
     if uid not in d["participants"]: return
     d["participants"][uid]["mask"] = mask; save_domain(channel_id, d)
 
+def set_user_description(channel_id, uid, desc):
+    d = get_domain(channel_id); uid = str(uid)
+    if uid not in d["participants"]: return
+    if desc.strip() in ["초기화", "reset", "삭제"]:
+        d["participants"][uid]["description"] = ""
+    else:
+        current_desc = d["participants"][uid].get("description", "")
+        if current_desc: d["participants"][uid]["description"] = f"{current_desc} {desc}"
+        else: d["participants"][uid]["description"] = desc
+    save_domain(channel_id, d)
+
+def get_user_description(channel_id, uid):
+    d = get_domain(channel_id); p = d["participants"].get(str(uid))
+    return p.get("description", "") if p else ""
+
 def get_user_mask(channel_id, uid):
     d = get_domain(channel_id); p = d["participants"].get(str(uid))
     return p.get("mask", "Unknown") if p else "Unknown"
 
 def get_active_participants_summary(channel_id):
-    """
-    [수정] 참가자 목록을 반환할 때 상태이상 정보도 같이 반환
-    """
     d = get_domain(channel_id)
     active = []
     for p in d["participants"].values():
         if p.get("status") == "active":
-            info = f"{p['mask']}"
-            # 상태이상이 있다면 표시 (예: 아서[중독, 출혈])
+            desc_str = f"({p['description']})" if p.get('description') else ""
+            info = f"{p['mask']}{desc_str}"
             effects = p.get("status_effects", [])
-            if effects:
-                info += f"[{', '.join(effects)}]"
+            if effects: info += f"[{', '.join(effects)}]"
             active.append(info)
     return ", ".join(active)
 
-# --- [신규] 월드 로직용 파티 정보 요약 ---
 def get_party_status_context(channel_id):
-    """
-    월드 매니저가 분위기를 파악하기 위해 파티 전체의 상태와 관계도를 요약합니다.
-    """
     d = get_domain(channel_id)
     participants = [p for p in d["participants"].values() if p.get("status") == "active"]
-    
     if not participants: return "No active players."
-
-    # 1. 상태이상 요약
     all_effects = []
     for p in participants:
-        if p.get("status_effects"):
-            all_effects.extend(p["status_effects"])
-    
+        if p.get("status_effects"): all_effects.extend(p["status_effects"])
     status_summary = "Healthy"
-    if all_effects:
-        status_summary = f"Suffering from {', '.join(set(all_effects))}"
-
-    # 2. 관계도 요약 (평판)
-    # 모든 플레이어의 관계도를 합쳐서 주요 NPC/세력과의 관계를 도출
+    if all_effects: status_summary = f"Suffering from {', '.join(set(all_effects))}"
     all_relations = {}
     for p in participants:
         for npc, val in p.get("relations", {}).items():
             all_relations[npc] = all_relations.get(npc, 0) + val
-    
     relation_summary = "Neutral"
     notable_relations = []
     for npc, score in all_relations.items():
         if score >= 10: notable_relations.append(f"{npc}(Friendly)")
         elif score <= -10: notable_relations.append(f"{npc}(Hostile)")
-    
-    if notable_relations:
-        relation_summary = ", ".join(notable_relations)
-
+    if notable_relations: relation_summary = ", ".join(notable_relations)
     return f"Party Condition: {status_summary} | Reputation: {relation_summary}"
 
 # --- 유저/영지 데이터 ---
@@ -339,24 +332,15 @@ def append_history(cid, role, content):
     save_domain(cid, d)
 
 # --- World & Quest Getter/Setter ---
-def get_world_state(cid):
-    return get_domain(cid).get("world_state")
-
+def get_world_state(cid): return get_domain(cid).get("world_state")
 def update_world_state(cid, new_state):
-    d = get_domain(cid)
-    d["world_state"] = new_state
-    save_domain(cid, d)
-
-def get_quest_board(cid):
-    return get_domain(cid).get("quest_board")
-
+    d = get_domain(cid); d["world_state"] = new_state; save_domain(cid, d)
+def get_quest_board(cid): return get_domain(cid).get("quest_board")
 def update_quest_board(cid, new_board):
-    d = get_domain(cid)
-    d["quest_board"] = new_board
-    save_domain(cid, d)
+    d = get_domain(cid); d["quest_board"] = new_board; save_domain(cid, d)
 
 def reset_domain(cid):
-    path = get_session_file_path(cid)
+    path = get_session_file_path(cid); 
     if os.path.exists(path):
         try: os.remove(path)
         except: pass
