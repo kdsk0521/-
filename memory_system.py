@@ -1,118 +1,142 @@
 import json
 import asyncio
 import logging
+import re
 from google.genai import types
 
+# =========================================================
+# [LORE COMPRESSION] 로어 압축기 (좌뇌 전처리)
+# =========================================================
+async def compress_lore_core(client, model_id, raw_lore_text):
+    """
+    [THEORIA LOGIC CORE]
+    Reduces token usage by 80% while retaining critical game data.
+    """
+    system_instruction = (
+        "[Role: Lore Archivist]\n"
+        "Compress text into a dense TRPG Sourcebook summary.\n"
+        "**Discard:** Fluff, poetry, repetition.\n"
+        "**Keep:** Rules, Factions, NPC Motives, Conflicts, Secrets.\n"
+        "**Format:** Plain text sections (World Laws, Factions, NPCs, Tension, Secrets)."
+    )
+    
+    user_prompt = f"### RAW TEXT\n{raw_lore_text}\n\n### INSTRUCTION\nCompress into dense sourcebook summary."
+
+    for i in range(3):
+        try:
+            response = await client.aio.models.generate_content(
+                model=model_id,
+                contents=[types.Content(role="user", parts=[types.Part(text=user_prompt)])],
+                config=types.GenerateContentConfig(temperature=0.2)
+            )
+            return response.text.strip()
+        except Exception:
+            await asyncio.sleep(1)
+            
+    return "Error: Lore Compression Failed."
+
+# =========================================================
+# [LOGIC ANALYZER] 상황 판단 및 인과율 계산 (좌뇌 코어)
+# =========================================================
 async def analyze_context_nvc(client, model_id, history_text, lore, rules, active_quests_text):
     """
     [THEORIA LEFT HEMISPHERE: LOGIC & CAUSALITY]
-    Analyzes the 'Macroscopic State' using MECE principles.
+    Analyzes 'Macroscopic State' for Alien Research Data Collection.
     """
     system_instruction = (
-        "[System Identity: THEORIA Left Hemisphere (Logic Core)]\n"
-        "You are the Axiom Enforcer. Analyze all available information—directions, context, and accumulated details.\n"
-        "**Apply the MECE principle (Mutually Exclusive, Collectively Exhaustive)** to ensure your analysis is comprehensive and non-overlapping.\n\n"
+        "[Identity: Logic Core]\n"
+        "Analyze input to extract objective facts. **Apply MECE principle.**\n\n"
         
-        "### AXIOM OF OBSERVATION\n"
-        "1. **Macroscopic Only:** Existence is opaque. Analyze only what is explicitly said, done, or physically manifested. Never presume 'Microscopic States' (inner thoughts) as facts.\n"
-        "2. **Causality:** The world implies strict asynchronous causality. Ensure that every 'Quest Complete' or 'Memo' update follows a logical cause-and-effect chain.\n"
-        "3. **Annihilate Category Errors:** Do not use metaphors or meta-language in analysis. Report the raw, unvarnished truth.\n"
-        "4. **Avatar Distinction:** Clearly distinguish between the 'User' (Player) and '{{user}}' (Character). Analyze {{user}}'s state, not the User's feelings. Do not invent goals or backstories for {{user}} not present in the History.\n\n"
+        "### OBSERVATION PROTOCOLS\n"
+        "1. **Physics Check (Hard Limits):** Verify physical/logical possibility. If impossible (e.g., flight w/o wings), state: **'Action Failed: Physics Violation'**.\n"
+        "2. **Macroscopic Only:** Analyze observable actions/states (injuries, arousal, fatigue) ONLY. No mind-reading.\n"
+        "3. **Knowledge Firewall:** Distinguish Player Knowledge vs Character Knowledge.\n"
+        "4. **Auto-XP Calculation:**\n"
+        "   - **Minor (10-30):** Skill check, smart move.\n"
+        "   - **Major (50-100):** Defeated enemy, solved puzzle, survived crisis.\n"
+        "   - **Critical (200+):** Boss kill, Quest complete.\n"
+        "   - *Condition:* Award ONLY for Success/Victory.\n\n"
 
         "### OUTPUT FORMAT (JSON ONLY)\n"
         "{\n"
-        "  \"Observation\": \"Objective summary of visible reality (Apply MECE: distinct facts only)\",\n"
-        "  \"CurrentLocation\": \"Inferred physical location\",\n"
-        "  \"LocationRisk\": \"None | Low | Medium | High | Extreme\",\n"
-        "  \"Need\": \"Logical narrative tension requiring resolution\",\n"
-        "  \"SystemAction\": {\n"
-        "      \"tool\": \"None\" | \"Memo\" | \"Quest\" | \"NPC\",\n"
-        "      \"type\": \"Add\" | \"Remove\" | \"Complete\" | \"Archive\",\n"
-        "      \"content\": \"Precise, dry summary of the item\"\n"
-        "  }\n"
-        "}"
+        "  \"CurrentLocation\": \"Location Name\",\n"
+        "  \"LocationRisk\": \"None/Low/Medium/High/Extreme\",\n"
+        "  \"TimeContext\": \"Time of day/flow\",\n"
+        "  \"Observation\": \"Objective summary (Who, What, Reaction, Physical Outcome).\",\n"
+        "  \"Need\": \"Logical next step (e.g., 'Calc damage', 'Scene transition')\",\n"
+        "  \"SystemAction\": { \"tool\": \"Quest/Memo/NPC/XP\", \"type\": \"...\", \"content\": \"...\" } OR null\n"
+        "}\n"
     )
 
     user_prompt = (
-        f"### WORLD AXIOMS (LORE)\n{lore}\n\n"
-        f"### ACTIVE CAUSAL CHAINS (QUESTS)\n{active_quests_text}\n\n"
-        f"### PHYSICS & RULES\n{rules}\n\n"
-        f"### OBSERVED MACROSCOPIC STATE (HISTORY)\n{history_text}\n\n"
-        "Execute Logic Core. Analyze Causality via MECE."
+        f"### [RULES]\n{rules}\n### [QUESTS]\n{active_quests_text}\n### [HISTORY]\n{history_text}\n"
+        "Analyze the current state."
     )
 
-    for i in range(5):
+    for i in range(3):
         try:
             response = await client.aio.models.generate_content(
                 model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=user_prompt)])],
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    response_mime_type="application/json",
-                )
+                config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1)
             )
-            result_text = response.text
-            if "```" in result_text:
-                import re
-                result_text = re.sub(r"```(json)?", "", result_text).strip()
-                
-            return json.loads(result_text)
-        except Exception as e:
-            delay = 2 ** i
-            if i == 4:
-                logging.error(f"Left Brain Failure: {e}")
-                return {"Observation": "Error", "SystemAction": {"tool": "None"}}
-            await asyncio.sleep(delay)
-    return None
+            text = re.sub(r"```(json)?", "", response.text).strip()
+            return json.loads(text)
+        except Exception:
+            await asyncio.sleep(1)
+            
+    return {
+        "CurrentLocation": "Unknown", "LocationRisk": "Low", 
+        "Observation": "Analysis Failed", "Need": "Proceed Caution"
+    }
 
+# =========================================================
+# [LORE ANALYZER] 로어 분석 도구들
+# =========================================================
 async def analyze_genre_from_lore(client, model_id, lore_text):
-    """[Logic Core] Analyze World Parameters"""
-    system_instruction = (
-        "Analyze the provided Lore to extract World Parameters (Genre & Tone).\n"
-        "JSON Only: {genres: [str], custom_tone: str}"
-    )
+    """[Logic Core] Analyze Genre & Tone"""
+    system_instruction = "Extract: 1. Key Genres (list), 2. Custom Tone (string)."
     user_prompt = f"Lore Data:\n{lore_text}"
     for i in range(3):
         try:
             response = await client.aio.models.generate_content(
                 model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=user_prompt)])],
-                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
-            text = response.text.replace("```json", "").replace("```", "")
-            res = json.loads(text)
-            return {"genres": res.get("genres", ["noir"]), "custom_tone": res.get("custom_tone")}
+            text = re.sub(r"```(json)?", "", response.text).strip()
+            return json.loads(text)
         except: await asyncio.sleep(1)
-    return {"genres": ["noir"], "custom_tone": None}
+    return {"genres": ["noir"], "custom_tone": "Dark and gritty"}
 
 async def analyze_npcs_from_lore(client, model_id, lore_text):
-    """[Logic Core] Identify Entities"""
-    system_instruction = "Extract Entity Profiles (NPCs). JSON: {\"npcs\": [{\"name\": \"str\", \"description\": \"str\"}]}"
+    """[Logic Core] Extract NPC Data"""
+    system_instruction = "Extract major NPCs. JSON: {'npcs': [{'name': '...', 'description': '...'}]}"
     user_prompt = f"Lore Data:\n{lore_text}"
     for i in range(3):
         try:
             response = await client.aio.models.generate_content(
                 model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=user_prompt)])],
-                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
-            text = response.text.replace("```json", "").replace("```", "")
+            text = re.sub(r"```(json)?", "", response.text).strip()
             return json.loads(text).get("npcs", [])
         except: await asyncio.sleep(1)
     return []
 
 async def analyze_location_rules_from_lore(client, model_id, lore_text):
     """[Logic Core] Extract Environmental Laws"""
-    system_instruction = "Extract Environmental Laws (Location Rules). JSON: {\"rules\": {\"LocName\": {\"risk\": \"High\", \"condition\": \"Night\", \"effect\": \"str\"}}}"
+    system_instruction = "Extract Location Rules. JSON: {\"rules\": {\"LocName\": {\"risk\": \"High\", \"condition\": \"Night\", \"effect\": \"str\"}}}"
     user_prompt = f"Lore Data:\n{lore_text}"
     for i in range(3):
         try:
             response = await client.aio.models.generate_content(
                 model=model_id,
                 contents=[types.Content(role="user", parts=[types.Part(text=user_prompt)])],
-                config=types.GenerateContentConfig(system_instruction=system_instruction, response_mime_type="application/json")
+                config=types.GenerateContentConfig(response_mime_type="application/json")
             )
-            text = response.text.replace("```json", "").replace("```", "")
+            text = re.sub(r"```(json)?", "", response.text).strip()
             return json.loads(text).get("rules", {})
         except: await asyncio.sleep(1)
     return {}

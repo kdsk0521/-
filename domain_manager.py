@@ -18,11 +18,12 @@ DEFAULT_RULES = """
 DATA_DIR = "data"
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 LORE_DIR = os.path.join(DATA_DIR, "lores")
+LORE_SUMMARY_DIR = os.path.join(DATA_DIR, "lore_summaries") # 요약본 저장 경로 추가
 RULES_DIR = os.path.join(DATA_DIR, "rules")
 
 def initialize_folders():
     """봇 실행에 필요한 데이터 폴더들을 초기화합니다."""
-    for path in [SESSIONS_DIR, LORE_DIR, RULES_DIR]:
+    for path in [SESSIONS_DIR, LORE_DIR, LORE_SUMMARY_DIR, RULES_DIR]:
         if not os.path.exists(path):
             try:
                 os.makedirs(path)
@@ -33,192 +34,174 @@ def get_session_file_path(channel_id):
     return os.path.join(SESSIONS_DIR, f"{channel_id}.json")
 
 def get_lore_file_path(channel_id):
-    return os.path.join(LORE_DIR, f"lore_{channel_id}.txt")
+    return os.path.join(LORE_DIR, f"{channel_id}.txt")
+
+def get_lore_summary_file_path(channel_id):
+    """요약된 로어 파일 경로"""
+    return os.path.join(LORE_SUMMARY_DIR, f"{channel_id}_summary.txt")
 
 def get_rules_file_path(channel_id):
-    return os.path.join(RULES_DIR, f"rules_{channel_id}.txt")
+    return os.path.join(RULES_DIR, f"{channel_id}.txt")
 
 # =========================================================
-# 역사 기록 시스템 (AI의 장기 기억)
+# 데이터 로드 및 저장 (I/O)
 # =========================================================
-def record_historical_event(channel_id, event_text):
-    domain = get_domain(channel_id)
-    world = domain.get("world_state", {})
-    day = world.get("day", 1)
-    time_slot = world.get("time_slot", "알 수 없음")
-    formatted_log = f"\n[역사적 기록 - 제 {day}일 {time_slot}] {event_text}"
-    append_lore(channel_id, formatted_log)
+def load_json(filepath, default_val):
+    if not os.path.exists(filepath): return default_val
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return default_val
+
+def save_json(filepath, data):
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"JSON 저장 실패 {filepath}: {e}")
+
+def load_text(filepath, default_val):
+    if not os.path.exists(filepath): return default_val
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception:
+        return default_val
+
+def save_text(filepath, text):
+    try:
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(text)
+    except Exception as e:
+        logging.error(f"Text 저장 실패 {filepath}: {e}")
 
 # =========================================================
-# 데이터 관리 (Load / Save)
+# 도메인(세션) 관리
 # =========================================================
-def _create_new_domain():
-    return {
-        "history": [],        
-        "participants": {},
-        "npcs": {}, 
-        "settings": {
-            "response_mode": "auto",
-            "active_genres": ["noir"], 
-            "custom_tone": None,
-            "growth_system": "standard", # 성장 시스템 저장 공간
-            "session_locked": False,
-            "bot_disabled": False,
-            "is_prepared": False
-        },
-        "world_state": {
-            "day": 1, "time_slot": "오전", "weather": "맑음", "doom": 0,
-            "current_location": "Unknown", "current_risk_level": "None", "location_rules": {}
-        },
-        "quest_board": {"active": [], "memo": [], "archive": [], "lore": [], "last_export_time": 0.0}
-    }
-
 def get_domain(channel_id):
-    path = get_session_file_path(channel_id)
-    if os.path.exists(path):
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                # 데이터 마이그레이션 (누락된 필드 자동 추가)
-                if "settings" not in data: data["settings"] = _create_new_domain()["settings"]
-                if "growth_system" not in data["settings"]: data["settings"]["growth_system"] = "standard"
-                if "active_genres" not in data["settings"]: data["settings"]["active_genres"] = ["noir"]
-                if "world_state" not in data: data["world_state"] = _create_new_domain()["world_state"]
-                if "npcs" not in data: data["npcs"] = {}
-                return data
-        except Exception as e:
-            logging.error(f"로드 실패 ({channel_id}): {e}")
-            return _create_new_domain()
-    return _create_new_domain()
+    default_session = {
+        "participants": {},
+        "npcs": {},
+        "history": [],
+        "quest_board": {"active": [], "completed": [], "memos": []},
+        "world_state": {"time_slot": "오후", "weather": "맑음", "day": 1, "doom": 0},
+        "settings": {"response_mode": "auto", "session_locked": False, "growth_system": "standard"},
+        "active_genres": ["noir"],
+        "custom_tone": None
+    }
+    return load_json(get_session_file_path(channel_id), default_session)
 
 def save_domain(channel_id, data):
-    try:
-        with open(get_session_file_path(channel_id), 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e: logging.error(f"저장 실패: {e}")
+    save_json(get_session_file_path(channel_id), data)
 
-# =========================================================
-# 참가자 데이터 관리
-# =========================================================
-def update_participant(channel_id, user, is_new_char=False):
-    d = get_domain(channel_id); uid = str(user.id)
-    if is_new_char and uid in d["participants"]:
-        old_mask = d["participants"][uid].get("mask", "Unknown")
-        record_historical_event(channel_id, f"운명의 수레바퀴가 돌며, 새로운 영웅이 등장했습니다. (이전 캐릭터: {old_mask})")
-        del d["participants"][uid]
-    if uid in d["participants"]:
-        d["participants"][uid]["name"] = user.display_name
-        if d["participants"][uid].get("status") in ["afk", "left"]: d["participants"][uid]["status"] = "active"
-        save_domain(channel_id, d); return True
-    if d["settings"].get("session_locked", False) and not is_new_char: return False
-    d["participants"][uid] = {
-        "name": user.display_name, "mask": user.display_name, "level": 1, "xp": 0, "next_xp": 100, 
-        "stats": {"근력":10,"지능":10,"매력":10,"스트레스":0}, "relations":{}, "inventory":{}, "status_effects": [], "description": "", "status":"active"
-    }
-    save_domain(channel_id, d); return True
-
-def save_participant_data(channel_id, uid, data):
-    """[수정] XP 획득 시 참가자 데이터를 덮어씌우는 필수 함수"""
+# 참가자 관리
+def update_participant(channel_id, user, reset=False):
     d = get_domain(channel_id)
-    d["participants"][str(uid)] = data
+    uid = str(user.id)
+    if reset or uid not in d["participants"]:
+        d["participants"][uid] = {
+            "mask": user.display_name,
+            "description": "상세 설정 없음",
+            "stats": {"근력": 10, "민첩": 10, "지능": 10, "매력": 10, "스트레스": 0},
+            "inventory": {},
+            "status_effects": [],
+            "level": 1, "xp": 0, "next_xp": 100,
+            "status": "active"
+        }
+    else:
+        d["participants"][uid]["mask"] = user.display_name
+        d["participants"][uid]["status"] = "active"
+    save_domain(channel_id, d)
+    return True
+
+def get_participant_data(channel_id, user_id):
+    d = get_domain(channel_id)
+    return d["participants"].get(str(user_id))
+
+def save_participant_data(channel_id, user_id, data):
+    d = get_domain(channel_id)
+    d["participants"][str(user_id)] = data
     save_domain(channel_id, d)
 
-def get_participant_data(channel_id, uid):
-    return get_domain(channel_id)["participants"].get(str(uid), None)
-
-def set_participant_status(channel_id, uid, status, reason=None):
-    d = get_domain(channel_id); uid = str(uid)
-    if uid in d["participants"]:
-        p = d["participants"][uid]; p["status"] = status
-        if status == "left" and reason: record_historical_event(channel_id, f"{p['mask']}님이 이탈했습니다.")
-        save_domain(channel_id, d); return p["mask"]
-    return None
-
-def get_participant_status(channel_id, uid):
-    p = get_domain(channel_id)["participants"].get(str(uid))
-    return p.get("status", "unknown") if p else "unknown"
-
-# =========================================================
-# 설정 관련 Getters/Setters (에러 원인 해결 부분)
-# =========================================================
-def set_growth_system(channel_id, system):
-    """[추가] !시스템 성장 명령어를 위한 함수"""
-    d = get_domain(channel_id)
-    d["settings"]["growth_system"] = system
-    save_domain(channel_id, d)
-
-def get_growth_system(channel_id):
-    """[추가] 현재 설정된 성장 시스템을 확인하는 함수"""
-    return get_domain(channel_id)["settings"].get("growth_system", "standard")
-
-def set_response_mode(channel_id, mode):
-    d = get_domain(channel_id); d["settings"]["response_mode"] = mode; save_domain(channel_id, d)
-
-def get_response_mode(channel_id):
-    return get_domain(channel_id)["settings"].get("response_mode", "auto")
-
-# 장르 및 장소
-def set_active_genres(channel_id, genres):
-    d = get_domain(channel_id); d["settings"]["active_genres"] = genres; save_domain(channel_id, d)
-def get_active_genres(channel_id): return get_domain(channel_id)["settings"].get("active_genres", ["noir"])
-def set_custom_tone(channel_id, tone):
-    d = get_domain(channel_id); d["settings"]["custom_tone"] = tone; save_domain(channel_id, d)
-def get_custom_tone(channel_id): return get_domain(channel_id)["settings"].get("custom_tone", None)
-
-def set_current_location(channel_id, loc):
-    d = get_domain(channel_id); d["world_state"]["current_location"] = loc; save_domain(channel_id, d)
-def get_current_location(channel_id): return get_domain(channel_id)["world_state"].get("current_location", "Unknown")
-def set_current_risk(channel_id, risk):
-    d = get_domain(channel_id); d["world_state"]["current_risk_level"] = risk; save_domain(channel_id, d)
-def get_current_risk(channel_id): return get_domain(channel_id)["world_state"].get("current_risk_level", "None")
-def set_location_rules(channel_id, rules):
-    d = get_domain(channel_id); d["world_state"]["location_rules"] = rules; save_domain(channel_id, d)
-
-# 로어 및 룰 파일
-def get_lore(channel_id):
-    path = get_lore_file_path(channel_id)
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f: return f.read().strip()
-    return DEFAULT_LORE
-
+# 설정/규칙 관리
+def get_lore(channel_id): return load_text(get_lore_file_path(channel_id), DEFAULT_LORE)
 def append_lore(channel_id, text):
-    path = get_lore_file_path(channel_id)
-    cur = get_lore(channel_id) if os.path.exists(path) else ""
-    with open(path, 'w', encoding='utf-8') as f: f.write(f"{cur}\n{text}".strip())
+    current = get_lore(channel_id)
+    # 기존 내용이 기본값이면 덮어쓰기, 아니면 이어쓰기
+    new_text = text if current == DEFAULT_LORE else f"{current}\n\n{text}"
+    save_text(get_lore_file_path(channel_id), new_text)
 
 def reset_lore(channel_id):
-    path = get_lore_file_path(channel_id)
-    if os.path.exists(path): os.remove(path)
+    if os.path.exists(get_lore_file_path(channel_id)):
+        os.remove(get_lore_file_path(channel_id))
+    # 요약본도 함께 삭제
+    if os.path.exists(get_lore_summary_file_path(channel_id)):
+        os.remove(get_lore_summary_file_path(channel_id))
 
-def get_rules(channel_id):
-    path = get_rules_file_path(channel_id)
+# === [NEW] 로어 요약 관리 함수 ===
+def get_lore_summary(channel_id):
+    """압축된 로어 요약본을 가져옵니다. 없으면 None 반환."""
+    path = get_lore_summary_file_path(channel_id)
     if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f: return f.read().strip()
-    return DEFAULT_RULES
+        return load_text(path, "")
+    return None
 
+def save_lore_summary(channel_id, summary_text):
+    """압축된 로어 요약본을 저장합니다."""
+    save_text(get_lore_summary_file_path(channel_id), summary_text)
+# ==============================
+
+def get_rules(channel_id): return load_text(get_rules_file_path(channel_id), DEFAULT_RULES)
 def append_rules(channel_id, text):
-    path = get_rules_file_path(channel_id)
-    cur = get_rules(channel_id) if os.path.exists(path) else ""
-    with open(path, 'w', encoding='utf-8') as f: f.write(f"{cur}\n{text}".strip())
-
+    current = get_rules(channel_id)
+    new_text = text if current == DEFAULT_RULES else f"{current}\n\n{text}"
+    save_text(get_rules_file_path(channel_id), new_text)
 def reset_rules(channel_id):
-    path = get_rules_file_path(channel_id)
-    if os.path.exists(path): os.remove(path)
+    if os.path.exists(get_rules_file_path(channel_id)): os.remove(get_rules_file_path(channel_id))
 
-# 기타 유틸
-def is_prepared(channel_id): return get_domain(channel_id)["settings"].get("is_prepared", False)
-def set_prepared(channel_id, status): d = get_domain(channel_id); d["settings"]["is_prepared"] = status; save_domain(channel_id, d)
-def is_bot_disabled(channel_id): return get_domain(channel_id)["settings"].get("bot_disabled", False)
-def set_bot_disabled(channel_id, status): d = get_domain(channel_id); d["settings"]["bot_disabled"] = status; save_domain(channel_id, d)
-def set_session_lock(channel_id, status): d = get_domain(channel_id); d["settings"]["session_locked"] = status; save_domain(channel_id, d)
+def get_active_genres(channel_id): return get_domain(channel_id).get("active_genres", ["noir"])
+def set_active_genres(channel_id, genres): d = get_domain(channel_id); d["active_genres"] = genres; save_domain(channel_id, d)
+
+def get_custom_tone(channel_id): return get_domain(channel_id).get("custom_tone")
+def set_custom_tone(channel_id, tone): d = get_domain(channel_id); d["custom_tone"] = tone; save_domain(channel_id, d)
+
+# 유틸리티
+def is_bot_disabled(channel_id): return get_domain(channel_id).get("disabled", False)
+def set_bot_disabled(channel_id, disabled): d = get_domain(channel_id); d["disabled"] = disabled; save_domain(channel_id, d)
+
+def is_prepared(channel_id): return get_domain(channel_id).get("prepared", False)
+def set_prepared(channel_id, prepared): d = get_domain(channel_id); d["prepared"] = prepared; save_domain(channel_id, d)
+
+def get_response_mode(channel_id): return get_domain(channel_id)["settings"].get("response_mode", "auto")
+def set_response_mode(channel_id, mode): d = get_domain(channel_id); d["settings"]["response_mode"] = mode; save_domain(channel_id, d)
+
+def get_growth_system(channel_id): return get_domain(channel_id)["settings"].get("growth_system", "standard")
+def set_growth_system(channel_id, mode): d = get_domain(channel_id); d["settings"]["growth_system"] = mode; save_domain(channel_id, d)
+
+def set_session_lock(channel_id, locked): d = get_domain(channel_id); d["settings"]["session_locked"] = locked; save_domain(channel_id, d)
+
+def set_current_location(channel_id, loc): d = get_domain(channel_id); d["current_location"] = loc; save_domain(channel_id, d)
+def set_current_risk(channel_id, risk): d = get_domain(channel_id); d["risk_level"] = risk; save_domain(channel_id, d)
+
+def get_participant_status(channel_id, uid): return get_domain(channel_id)["participants"].get(str(uid), {}).get("status", "active")
+def set_participant_status(channel_id, uid, status, reason=""): 
+    d = get_domain(channel_id)
+    if str(uid) in d["participants"]:
+        d["participants"][str(uid)]["status"] = status
+        if status == "left":
+            mask = d["participants"][str(uid)]["mask"]
+            append_history(channel_id, "System", f"[{mask}] 님이 {reason}로 인해 퇴장했습니다.")
+    save_domain(channel_id, d)
 
 def append_history(channel_id, role, content):
-    d = get_domain(channel_id); d['history'].append({"role": role, "content": content})
+    d = get_domain(channel_id)
+    d["history"].append({"role": role, "content": content})
     if len(d['history']) > 40: d['history'] = d['history'][-40:]
     save_domain(channel_id, d)
 
 def reset_domain(channel_id):
-    for f in [get_session_file_path(channel_id), get_lore_file_path(channel_id), get_rules_file_path(channel_id)]:
+    for f in [get_session_file_path(channel_id), get_lore_file_path(channel_id), get_rules_file_path(channel_id), get_lore_summary_file_path(channel_id)]:
         if os.path.exists(f): os.remove(f)
 
 # NPC 데이터
@@ -230,13 +213,6 @@ def update_quest_board(cid, b): d = get_domain(cid); d["quest_board"] = b; save_
 def get_world_state(cid): return get_domain(cid).get("world_state")
 def update_world_state(cid, s): d = get_domain(cid); d["world_state"] = s; save_domain(cid, d)
 def get_user_mask(cid, uid): return get_domain(cid)["participants"].get(str(uid), {}).get("mask", "Unknown")
-def set_user_mask(cid, uid, mask): d = get_domain(cid); uid=str(uid); d["participants"][uid]["mask"]=mask; save_domain(cid, d)
-def set_user_description(cid, uid, desc):
-    d = get_domain(cid); uid=str(uid)
-    if uid in d["participants"]: d["participants"][uid]["description"] = desc; save_domain(cid, d)
-def get_party_status_context(cid):
-    d = get_domain(cid); parts = []
-    for p in d["participants"].values():
-        if p.get("status") == "left": continue
-        parts.append(f"{p['mask']}(Stress: {p['stats'].get('스트레스',0)})")
-    return " | ".join(parts)
+def set_user_mask(cid, uid, mask): d = get_domain(cid); uid=str(uid); d["participants"][uid]["mask"] = mask; save_domain(cid, d)
+def set_user_description(cid, uid, desc): d = get_domain(cid); uid=str(uid); d["participants"][uid]["description"] = desc; save_domain(cid, d)
+def set_location_rules(cid, rules): d = get_domain(cid); d["location_rules"] = rules; save_domain(cid, d)
