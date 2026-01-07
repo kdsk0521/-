@@ -99,6 +99,8 @@ def save_domain(channel_id, data):
 def update_participant(channel_id, user, reset=False):
     d = get_domain(channel_id)
     uid = str(user.id)
+    
+    # 신규 참가자이거나 리셋 요청인 경우 초기화
     if reset or uid not in d["participants"]:
         d["participants"][uid] = {
             "mask": user.display_name,
@@ -107,11 +109,13 @@ def update_participant(channel_id, user, reset=False):
             "inventory": {},
             "status_effects": [],
             "level": 1, "xp": 0, "next_xp": 100,
-            "status": "active"
+            "status": "active",
+            "summary_data": {} # [NEW] AI 분석 요약 정보 저장용
         }
     else:
-        d["participants"][uid]["mask"] = user.display_name
+        # 기존 참가자는 가면(Mask)을 덮어쓰지 않고 상태만 활성화
         d["participants"][uid]["status"] = "active"
+        
     save_domain(channel_id, d)
     return True
 
@@ -124,31 +128,34 @@ def save_participant_data(channel_id, user_id, data):
     d["participants"][str(user_id)] = data
     save_domain(channel_id, d)
 
+# [NEW] 참가자 요약 정보 저장 (Main에서 !내정보 결과 저장용)
+def save_participant_summary(channel_id, user_id, summary_data):
+    d = get_domain(channel_id)
+    if str(user_id) in d["participants"]:
+        d["participants"][str(user_id)]["summary_data"] = summary_data
+        save_domain(channel_id, d)
+
 # 설정/규칙 관리
 def get_lore(channel_id): return load_text(get_lore_file_path(channel_id), DEFAULT_LORE)
 def append_lore(channel_id, text):
     current = get_lore(channel_id)
-    # 기존 내용이 기본값이면 덮어쓰기, 아니면 이어쓰기
     new_text = text if current == DEFAULT_LORE else f"{current}\n\n{text}"
     save_text(get_lore_file_path(channel_id), new_text)
 
 def reset_lore(channel_id):
     if os.path.exists(get_lore_file_path(channel_id)):
         os.remove(get_lore_file_path(channel_id))
-    # 요약본도 함께 삭제
     if os.path.exists(get_lore_summary_file_path(channel_id)):
         os.remove(get_lore_summary_file_path(channel_id))
 
 # 로어 요약 관리 함수
 def get_lore_summary(channel_id):
-    """압축된 로어 요약본을 가져옵니다. 없으면 None 반환."""
     path = get_lore_summary_file_path(channel_id)
     if os.path.exists(path):
         return load_text(path, "")
     return None
 
 def save_lore_summary(channel_id, summary_text):
-    """압축된 로어 요약본을 저장합니다."""
     save_text(get_lore_summary_file_path(channel_id), summary_text)
 
 def get_rules(channel_id): return load_text(get_rules_file_path(channel_id), DEFAULT_RULES)
@@ -216,29 +223,53 @@ def set_user_mask(cid, uid, mask): d = get_domain(cid); uid=str(uid); d["partici
 def set_user_description(cid, uid, desc): d = get_domain(cid); uid=str(uid); d["participants"][uid]["description"] = desc; save_domain(cid, d)
 def set_location_rules(cid, rules): d = get_domain(cid); d["location_rules"] = rules; save_domain(cid, d)
 
-# [필수 추가 함수] 파티 상태 컨텍스트 반환 (world_manager에서 사용)
+# [수정] 파티 상태 컨텍스트 반환 (관계 정보 포함)
 def get_party_status_context(channel_id):
     """
-    현재 참가자들의 상태(체력, 스트레스, 위치 등)를 요약하여 텍스트로 반환합니다.
+    현재 참가자들의 상세 상태를 요약하여 반환합니다.
+    !내정보 명령어로 저장된 'summary_data'가 있다면 이를 적극 활용합니다.
     """
     d = get_domain(channel_id)
     participants = d.get("participants", {})
-    if not participants:
-        return "파티 상태: 참가자 없음"
-    
+    if not participants: return "파티 상태: 참가자 없음"
     summary = []
     for uid, p_data in participants.items():
         mask = p_data.get("mask", "Unknown")
         status = p_data.get("status", "active")
-        if status != "active": continue # 활성 참가자만 표시
+        if status != "active": continue
         
+        # 기본 정보
+        desc = p_data.get("description", "특이사항 없음")
+        level = p_data.get("level", 1)
+        xp = p_data.get("xp", 0)
+        next_xp = p_data.get("next_xp", 100)
         stats = p_data.get("stats", {})
-        stress = stats.get("스트레스", 0)
-        effects = p_data.get("status_effects", [])
+        stats_str = ", ".join([f"{k}: {v}" for k, v in stats.items()])
         
-        status_text = f"[{mask}] 스트레스: {stress}"
-        if effects:
-            status_text += f" | 상태이상: {', '.join(effects)}"
+        # 저장된 요약 정보 (관계, 외형 요약) 가져오기
+        summary_data = p_data.get("summary_data", {})
+        relations = summary_data.get("relationships", [])
+        appearance = summary_data.get("appearance_summary", "")
+        
+        # 종합 텍스트 생성
+        status_text = (
+            f"--- [{mask}] ---\n"
+            f"   Level: {level} (XP: {xp}/{next_xp})\n"
+            f"   Stats: {stats_str}\n"
+        )
+        
+        # 설명이 너무 길면 요약본(appearance) 우선 사용
+        if appearance:
+            status_text += f"   Appearance: {appearance}\n"
+        else:
+            short_desc = desc[:50] + "..." if len(desc) > 50 else desc
+            status_text += f"   Desc: {short_desc}\n"
+            
+        # 관계 정보가 있으면 추가
+        if relations:
+            rel_str = ", ".join(relations[:3]) # 너무 길어지지 않게 상위 3개만
+            status_text += f"   Relations: {rel_str}\n"
+            
         summary.append(status_text)
         
     return "\n".join(summary)

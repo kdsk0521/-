@@ -6,15 +6,18 @@ import logging
 import re
 from google.genai import types
 
+# =========================================================
+# AI 유틸리티
+# =========================================================
 async def call_gemini_api(client, model_id, prompt, system_instruction=""):
-    if not client: return "CRITICAL_ERROR: AI 클라이언트가 연결되지 않았습니다."
+    if not client: return None
     
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
-        response_mime_type="application/json"
+        response_mime_type="application/json",
+        temperature=0.1 # 판단 로직이므로 온도를 낮춤
     )
     
-    last_error = ""
     for i in range(3):
         try:
             response = await client.aio.models.generate_content(
@@ -22,302 +25,345 @@ async def call_gemini_api(client, model_id, prompt, system_instruction=""):
                 contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
                 config=config
             )
-            
-            if not response.candidates: continue
-            
-            try: raw_text = response.text
-            except ValueError: continue
-
-            clean_text = re.sub(r"```(json)?", "", raw_text).strip()
+            clean_text = re.sub(r"```(json)?", "", response.text).strip()
             return json.loads(clean_text)
-            
-        except Exception as e:
-            last_error = str(e)
+        except Exception:
             await asyncio.sleep(1)
-            
-    return f"ERROR_FAIL: {last_error}"
+    return None
 
-# ... (기존 함수들 유지: get_objective_context ~ evaluate_custom_growth) ...
-# 코드 길이상 중복되는 기존 함수들은 생략하지 않고 모두 포함해야 파일이 깨지지 않습니다.
-# 아래 코드는 전체 코드를 포함하고 있습니다.
-
+# =========================================================
+# 컨텍스트 생성 (Context Generation)
+# =========================================================
 def get_objective_context(channel_id):
+    """현재 퀘스트와 메모 상태를 AI가 읽기 좋은 텍스트로 변환"""
     board = domain_manager.get_quest_board(channel_id)
-    active_quests = board.get("active", [])
-    memos = board.get("memo", [])
-    lore = board.get("lore", []) 
-    context = "### [SYSTEM MEMORY: QUEST BOARD & ARCHIVES]\n"
-    if lore:
-        context += "\n[Chronicles (Long-term Memory)]\n"
-        for entry in lore[-5:]: context += f"- {entry.get('title')}: {entry.get('content')}\n"
-    if active_quests:
-        context += "\n[Active Quests (Objectives)]\n"
-        for q in active_quests: context += f"- [QUEST] {q}\n"
+    if not board: return "No active quests or memos."
+    
+    active = board.get("active", [])
+    memos = board.get("memos", [])
+    archives = board.get("archive", []) # 보관된 정보도 컨텍스트에 일부 반영
+    
+    txt = "### [QUESTS & MEMOS]\n"
+    if active:
+        txt += "**Active Objectives:**\n" + "\n".join([f"- {q}" for q in active]) + "\n"
+    else:
+        txt += "- No active quests.\n"
+        
     if memos:
-        context += "\n[Memos (Clues & Notes)]\n"
-        for m in memos: context += f"- [NOTE] {m}\n"
-    return context
+        txt += "**Active Memos:**\n" + "\n".join([f"- {m}" for m in memos]) + "\n"
+    else:
+        txt += "- No active memos.\n"
+
+    # 보관된 메모 중 최근 3개만 보여주어 맥락 유지
+    if archives:
+        txt += "**Archived Info (Reference):**\n" + "\n".join([f"- {m}" for m in archives[-3:]])
+        
+    return txt
+
+def get_active_quests_text(channel_id):
+    board = domain_manager.get_quest_board(channel_id) or {}
+    active = board.get("active", [])
+    if not active: return "📭 현재 진행 중인 퀘스트가 없습니다."
+    return "🔥 **진행 중인 퀘스트:**\n" + "\n".join([f"{i+1}. {q}" for i, q in enumerate(active)])
+
+def get_memos_text(channel_id):
+    board = domain_manager.get_quest_board(channel_id) or {}
+    memos = board.get("memos", [])
+    if not memos: return "📭 저장된 메모가 없습니다."
+    return "📝 **메모 목록:**\n" + "\n".join([f"- {m}" for m in memos])
+
+def get_status_message(channel_id):
+    """퀘스트와 메모 상태를 한 번에 보여줌"""
+    q_text = get_active_quests_text(channel_id)
+    m_text = get_memos_text(channel_id)
+    return f"{q_text}\n\n{m_text}"
+
+# =========================================================
+# 퀘스트 & 메모 관리 (CRUD)
+# =========================================================
+def _get_board(cid):
+    d = domain_manager.get_domain(cid)
+    if "quest_board" not in d or not isinstance(d["quest_board"], dict):
+        d["quest_board"] = {"active": [], "completed": [], "memos": [], "archive": [], "lore": []}
+    
+    # 키가 없을 경우 보정
+    if "memos" not in d["quest_board"]: d["quest_board"]["memos"] = []
+    if "archive" not in d["quest_board"]: d["quest_board"]["archive"] = []
+    if "lore" not in d["quest_board"]: d["quest_board"]["lore"] = []
+    
+    return d["quest_board"]
+
+def _save_board(cid, board):
+    domain_manager.update_quest_board(cid, board)
 
 def add_quest(channel_id, content):
-    board = domain_manager.get_quest_board(channel_id)
+    if not content: return None
+    board = _get_board(channel_id)
     if content not in board["active"]:
         board["active"].append(content)
-        domain_manager.update_quest_board(channel_id, board)
-        return f"⚔️ **[퀘스트 수주]** {content}"
-    return None
+        _save_board(channel_id, board)
+        return f"🔥 **퀘스트 등록:** {content}"
+    return "⚠️ 이미 등록된 퀘스트입니다."
 
 def complete_quest(channel_id, content):
-    board = domain_manager.get_quest_board(channel_id)
-    active_quests = board.get("active", [])
-    if not active_quests: return "❌ 현재 진행 중인 퀘스트가 없습니다."
-
-    inputs = re.split(r'[,\s]+', content.strip())
-    targets_to_complete = []
+    if not content: return None
+    board = _get_board(channel_id)
     
-    for inp in inputs:
-        if not inp: continue
-        target = None
-        if inp.isdigit():
-            idx = int(inp) - 1
-            if 0 <= idx < len(active_quests): target = active_quests[idx]
-        else:
-            for q in active_quests:
-                if inp in q: target = q; break
-        if target and target not in targets_to_complete: targets_to_complete.append(target)
-
-    if not targets_to_complete: return "❌ 해당하는 퀘스트를 찾을 수 없습니다."
-
-    completed_titles = []
-    for item in targets_to_complete:
-        if item in board["active"]:
-            board["active"].remove(item)
-            completed_titles.append(item)
-            lore_entry = {"title": f"달성: {item}", "content": f"파티는 '{item}'의 과업을 완수하였다.", "timestamp": time.time()}
-            if "lore" not in board: board["lore"] = []
-            board["lore"].append(lore_entry)
-
-    domain_manager.update_quest_board(channel_id, board)
-    summary = "\n".join([f"- ~~{t}~~" for t in completed_titles])
-    return f"🏆 **[퀘스트 완료]** 총 {len(completed_titles)}건 처리됨\n{summary}"
+    target = None
+    for q in board["active"]:
+        if content in q or q in content:
+            target = q
+            break
+            
+    if target:
+        board["active"].remove(target)
+        if "completed" not in board: board["completed"] = []
+        board["completed"].append(target)
+        _save_board(channel_id, board)
+        return f"✅ **퀘스트 완료:** {target}"
+    return "⚠️ 해당 퀘스트를 찾을 수 없습니다."
 
 def add_memo(channel_id, content):
-    board = domain_manager.get_quest_board(channel_id)
-    if "memo" not in board: board["memo"] = []
-    if content not in board["memo"]:
-        board["memo"].append(content)
-        domain_manager.update_quest_board(channel_id, board)
-        return f"📝 **[메모 기록]** {content}"
-    return None
+    if not content: return None
+    board = _get_board(channel_id)
+    if content not in board["memos"]:
+        board["memos"].append(content)
+        _save_board(channel_id, board)
+        return f"📝 **메모 추가:** {content}"
+    return "⚠️ 이미 있는 메모입니다."
 
 def remove_memo(channel_id, content):
-    board = domain_manager.get_quest_board(channel_id)
-    memos = board.get("memo", [])
-    if not memos: return "❌ 기록된 메모가 없습니다."
-    inputs = re.split(r'[,\s]+', content.strip())
-    targets = []
-    for inp in inputs:
-        if not inp: continue
-        target = None
-        if inp.isdigit():
-            idx = int(inp) - 1
-            if 0 <= idx < len(memos): target = memos[idx]
-        else:
-            for m in memos:
-                if inp in m: target = m; break
-        if target and target not in targets: targets.append(target)
+    """메모를 단순히 삭제합니다 (수동 삭제용)."""
+    if not content: return None
+    board = _get_board(channel_id)
+    memos = board.get("memos", [])
     
-    if not targets: return "❌ 해당 메모 없음"
-    for t in targets: 
-        if t in board["memo"]: board["memo"].remove(t)
-    domain_manager.update_quest_board(channel_id, board)
-    return f"🗑️ **[메모 삭제]** {len(targets)}건"
+    target = None
+    for m in memos:
+        if content in m: # 부분 일치 허용
+            target = m
+            break
+            
+    if target:
+        memos.remove(target)
+        board["memos"] = memos
+        _save_board(channel_id, board)
+        return f"🗑️ **메모 삭제:** {target}"
+    return "⚠️ 해당 메모를 찾을 수 없습니다."
 
 def resolve_memo_auto(channel_id, content):
-    board = domain_manager.get_quest_board(channel_id)
-    memos = board.get("memo", [])
+    """
+    AI(좌뇌)가 'Memo Remove' 명령을 내렸을 때 호출됩니다.
+    안전을 위해 바로 삭제하지 않고 '보관함'으로 보냅니다.
+    """
+    board = _get_board(channel_id)
+    memos = board.get("memos", [])
+    
     target = None
-    if content.isdigit():
+    if str(content).isdigit():
         idx = int(content) - 1
         if 0 <= idx < len(memos): target = memos[idx]
     else:
         for m in memos:
-            if content in m or m in content: target = m; break
+            if content in m: target = m; break
+            
     if target:
         memos.remove(target)
-        board["memo"] = memos
-        board.setdefault("lore", []).append({"title": "사건 해결", "content": f"단서 해결: {target}", "timestamp": time.time()})
-        domain_manager.update_quest_board(channel_id, board)
-        return f"📂 **[메모 해결]** '{target}' -> 연대기 이동"
-    return "❌ 해당 메모 없음"
+        if "archive" not in board: board["archive"] = []
+        board["archive"].append(target)
+        
+        _save_board(channel_id, board)
+        return f"🗄️ **[메모 해결]** '{target}' (보관함 이동)"
+    return None
 
+# =========================================================
+# AI 연동 기능
+# =========================================================
 async def archive_memo_with_ai(client, model_id, channel_id, content_or_index):
-    board = domain_manager.get_quest_board(channel_id)
-    memos = board.get("memo", [])
+    """
+    [AI] 메모의 내용을 분석하여 '영구 보관(장비/관계)'할지 '완전 삭제(소모품)'할지 결정합니다.
+    """
+    board = _get_board(channel_id)
+    memos = board.get("memos", [])
+    
     target = None
     if str(content_or_index).isdigit():
         idx = int(content_or_index) - 1
-        if 0 <= idx < len(memos): target = memos.pop(idx)
+        if 0 <= idx < len(memos): target = memos[idx]
     else:
         for m in memos:
-            if content_or_index in m: target = m; memos.remove(m); break
-    if not target: return "❌ 메모 없음"
+            if content_or_index in m: target = m; break
+            
+    if not target: return "❌ 해당 메모를 찾을 수 없습니다."
 
-    current_genres = domain_manager.get_active_genres(channel_id)
-    current_lore = domain_manager.get_lore(channel_id)
-    
     system_prompt = (
-        "Chronicler Task. 1.Archive(worthy=true) 2.GenreShift(Fundamentally alters genre?). JSON only."
-        f"Current: {current_genres}"
+        "You are a Data Librarian. Analyze the memo content and categorize it.\n"
+        "**Rules:**\n"
+        "1. **DELETE:** Consumables, temporary status, trivial noise.\n"
+        "2. **ARCHIVE:** Equipment, Appearance changes, Relationships, Story Clues.\n\n"
+        "Output JSON: {\"action\": \"DELETE\" or \"ARCHIVE\", \"reason\": \"Short explanation in Korean\"}"
     )
-    user_prompt = f"Lore: {current_lore[:200]}...\nMemo: {target}"
+    user_prompt = f"Memo Content: {target}"
     
-    analysis = await call_gemini_api(client, model_id, user_prompt, system_prompt)
-    if isinstance(analysis, str) and "ERROR" in analysis: return f"⚠️ AI 오류: {analysis}"
-
-    msg = f"📂 **보관:** {target}"
-    if analysis:
-        if analysis.get("genres"):
-            new_g = [g for g in analysis["genres"] if g in ['noir', 'sf', 'wuxia', 'cyberpunk', 'high_fantasy', 'low_fantasy', 'cosmic_horror', 'post_apocalypse', 'urban_fantasy', 'steampunk', 'school_life', 'superhero']]
-            if new_g and set(new_g) != set(current_genres):
-                domain_manager.set_active_genres(channel_id, new_g)
-                msg += f"\n🎨 **분위기 전환:** {new_g}"
-        if analysis.get("worthy"):
-            board.setdefault("lore", []).append({"title": "기록", "content": analysis.get("summary", target), "timestamp": time.time()})
-            msg += "\n✨ **연대기 등재됨**"
-        else:
-            board.setdefault("archive", []).append(target)
+    decision = await call_gemini_api(client, model_id, user_prompt, system_prompt)
     
-    domain_manager.update_quest_board(channel_id, board)
+    memos.remove(target)
+    board["memos"] = memos
+    
+    msg = ""
+    if decision and decision.get("action") == "ARCHIVE":
+        if "archive" not in board: board["archive"] = []
+        board["archive"].append(target)
+        msg = f"🗄️ **[보관됨]** {target}\n(사유: {decision.get('reason')})"
+    else:
+        reason = decision.get("reason") if decision else "소모성/임시 데이터"
+        msg = f"🗑️ **[삭제됨]** {target}\n(사유: {reason})"
+    
+    _save_board(channel_id, board)
     return msg
 
-def get_status_message(channel_id):
-    board = domain_manager.get_quest_board(channel_id)
-    msg = ""
-    if board.get("active"): msg += "⚔️ **퀘스트**\n" + "\n".join([f"{i+1}. {q}" for i, q in enumerate(board["active"])]) + "\n\n"
-    if board.get("memo"): msg += "📝 **메모**\n" + "\n".join([f"{i+1}. {m}" for i, m in enumerate(board["memo"])])
-    return msg if msg else "📭 비어있음"
+async def generate_character_info_view(client, model_id, channel_id, user_id, current_desc, inventory_dict):
+    """[AI] 캐릭터 요약 정보 생성"""
+    inv_text = ", ".join([f"{k} x{v}" for k, v in inventory_dict.items()]) if inventory_dict else "(빈털터리)"
+    history_logs = domain_manager.get_domain(channel_id).get('history', [])[-20:]
+    history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history_logs])
 
-def get_active_quests_text(channel_id):
-    board = domain_manager.get_quest_board(channel_id)
-    quests = board.get("active", [])
-    if not quests: return "📭 **현재 수행 중인 퀘스트가 없습니다.**"
-    return "⚔️ **[현재 퀘스트 목록]**\n" + "\n".join([f"{i+1}. {q}" for i, q in enumerate(quests)])
-
-def get_memos_text(channel_id):
-    board = domain_manager.get_quest_board(channel_id)
-    memos = board.get("memo", [])
-    if not memos: return "📭 **기록된 메모가 없습니다.**"
-    return "📝 **[메모 목록]**\n" + "\n".join([f"{i+1}. {m}" for i, m in enumerate(memos)])
-
-def get_lore_book(channel_id):
-    board = domain_manager.get_quest_board(channel_id)
-    lore = board.get("lore", [])
-    if not lore: return "📖 기록 없음"
-    return "📖 **[연대기]**\n" + "\n".join([f"{i+1}. {l['content']}" for i, l in enumerate(lore)])
+    system_prompt = (
+        "You are a UI Generator for a TRPG status window.\n"
+        "Analyze the character's description, inventory, and recent history.\n"
+        "Output JSON: {"
+        "  \"appearance_summary\": \"Concise 1-sentence visual summary.\","
+        "  \"assets_summary\": \"Summarize wealth/power based on inventory.\","
+        "  \"relationships\": [\"NPC_Name: Relationship_Keyword (max 3 words)\"]"
+        "}"
+    )
+    user_prompt = f"Desc:\n{current_desc}\n\nInv:\n{inv_text}\n\nHistory:\n{history_text}"
+    return await call_gemini_api(client, model_id, user_prompt, system_prompt)
 
 async def generate_chronicle_from_history(client, model_id, channel_id):
+    """[AI] 연대기(요약본) 생성"""
     domain = domain_manager.get_domain(channel_id)
-    board = domain_manager.get_quest_board(channel_id)
+    board = _get_board(channel_id)
     history = domain.get('history', [])
-    if not history or len(history) < 2: return "⚠️ 대화 기록 부족"
-    history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history[-30:]])
+    if not history: return "기록된 역사가 없습니다."
     
-    recent_events = "\n".join([f"- {l['content']}" for l in board.get("lore", [])[-5:]])
-    context = f"[Quests]: {board.get('active', [])}\n[Memos]: {board.get('memo', [])}"
-
-    system_prompt = "Chronicler. Summarize history+events. JSON: {title, content}"
-    user_prompt = f"History:\n{history_text}\n\nRecent Events:\n{recent_events}\n\nContext:\n{context}"
+    full_text = "\n".join([f"{h['role']}: {h['content']}" for h in history[-50:]])
+    system_prompt = (
+        "You are the Chronicler. Summarize the provided RPG session log into a compelling narrative summary.\n"
+        "Focus on key events, decisions, and outcomes. Write in Korean."
+    )
+    system_prompt_json = system_prompt + "\nOutput JSON: {\"title\": \"Title\", \"summary\": \"Content...\"}"
     
-    res = await call_gemini_api(client, model_id, user_prompt, system_prompt)
-    if isinstance(res, dict) and res.get("title"):
-        board.setdefault("lore", []).append({"title": res.get("title"), "content": res.get("content"), "timestamp": time.time()})
-        domain_manager.update_quest_board(channel_id, board)
-        return f"✨ **연대기 생성:** {res.get('title')}\n> {res.get('content')}"
-    return "⚠️ 생성 실패"
+    res = await call_gemini_api(client, model_id, f"Log:\n{full_text}", system_prompt_json)
+    
+    if res and "summary" in res:
+        entry = {
+            "title": res.get("title", "기록"),
+            "content": res.get("summary"),
+            "timestamp": time.time()
+        }
+        board["lore"].append(entry)
+        _save_board(channel_id, board)
+        return f"📜 **[연대기 기록됨]** {entry['title']}\n{entry['content'][:100]}..."
+    return "연대기 생성 실패"
 
-def export_chronicles_incremental(channel_id, mode="new"):
-    board = domain_manager.get_quest_board(channel_id)
+def get_lore_book(channel_id):
+    """채팅창에 연대기 목록을 간략히 표시"""
+    board = _get_board(channel_id)
     lore = board.get("lore", [])
-    last_export = board.get("last_export_time", 0.0)
-    target = lore if mode in ["all", "전체"] else [e for e in lore if e.get('timestamp', 0) > last_export]
-    if not target: return None, "🚫 신규 기록 없음"
-    txt = "[ 연대기 ]\n\n" + "\n\n".join([f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(e.get('timestamp',0)))}] {e.get('content')}" for e in target])
-    if mode not in ["all", "전체"]:
-        board["last_export_time"] = time.time()
-        domain_manager.update_quest_board(channel_id, board)
-    return txt, "📜 추출 완료"
-
-async def evaluate_custom_growth(client, model_id, lvl, xp, rule):
-    if not client: return {"leveled_up": False}
-    res = await call_gemini_api(client, model_id, f"Lv:{lvl}, XP:{xp}\nRule:{rule}", "Judge level up. JSON: {leveled_up:bool, new_level:int, reason:str}")
-    if isinstance(res, dict): return res
-    return {"leveled_up": False}
-
-async def analyze_character_evolution(client, model_id, channel_id, user_id, current_desc):
-    if not client: return None
-    domain = domain_manager.get_domain(channel_id)
-    history = domain.get('history', [])[-40:]
-    history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history])
-    board = domain_manager.get_quest_board(channel_id)
-    memos = board.get("memo", [])
-    recent_lore = board.get("lore", [])[-10:]
-    lore_text = "\n".join([f"- {l['content']}" for l in recent_lore])
+    if not lore: return "📖 기록된 연대기가 없습니다."
     
-    system_prompt = (
-        "Character Profile Editor. Update description based on events.\n"
-        "Rules: PERMANENCE ONLY (scars, titles, power), PRESERVE existing traits, MERGE seamlessly.\n"
-        "Output JSON: {\"description\": \"Updated text (Korean)\"}"
-    )
-    user_prompt = f"Desc:\n{current_desc}\n\nHistory:\n{history_text}\n\nClues:\n{memos}\n\nLore:\n{lore_text}\nTask: Update description."
+    msg = "📖 **[연대기 목록]**\n"
+    for i, entry in enumerate(lore):
+        date_str = time.strftime('%Y-%m-%d', time.localtime(entry.get('timestamp', 0)))
+        msg += f"{i+1}. [{date_str}] {entry.get('title')}\n"
     
-    res = await call_gemini_api(client, model_id, user_prompt, system_prompt)
-    if isinstance(res, dict) and res.get("description"): return res.get("description")
-    return None
+    msg += "\n💡 `!추출`은 대화 로그를, `!연대기 추출`은 이 요약본을 파일로 저장합니다."
+    return msg
 
-# [신규 기능] 내 정보(Info) 요약 생성
-async def generate_character_info_view(client, model_id, channel_id, user_id, current_desc, inventory_dict):
+async def evaluate_custom_growth(client, model_id, current_level, current_xp, rules_text):
+    """[AI] 레벨업 판정"""
+    system_prompt = "Evaluate level up. JSON Output: {\"leveled_up\": bool, \"new_level\": int, \"reason\": \"str\"}"
+    user_prompt = f"Rules:\n{rules_text}\n\nCurrent Level: {current_level}, XP: {current_xp}"
+    return await call_gemini_api(client, model_id, user_prompt, system_prompt)
+
+# =========================================================
+# [핵심] 추출 시스템 (로그 vs 연대기)
+# =========================================================
+def export_chronicles_incremental(channel_id, mode=""):
     """
-    [기능] AI에게 캐릭터 데이터를 주고 '외형 요약', '재산', '주요 NPC 관계'를 추출합니다.
+    [로그 추출] 대화 내역(History)을 텍스트 파일로 추출
+    - mode="전체", "full": 처음부터 끝까지 추출
+    - mode="" (기본): 마지막 추출 이후 내용만 추출 (증분)
     """
-    if not client: return None
-    
-    # 1. 정보 수집
     domain = domain_manager.get_domain(channel_id)
-    history = domain.get('history', [])[-50:] # 관계 파악을 위해 최근 대화 참조
-    history_text = "\n".join([f"{h['role']}: {h['content']}" for h in history])
+    history = domain.get('history', [])
     
-    # NPC 목록 가져오기
-    npcs = domain.get('npcs', {})
-    npc_list_text = ", ".join(npcs.keys()) if npcs else "(None)"
-    
-    # 인벤토리 텍스트 변환
-    inv_text = ", ".join([f"{k} x{v}" for k, v in inventory_dict.items()]) if inventory_dict else "(빈털터리)"
+    if not history: return None, "❌ 기록된 대화가 없습니다."
 
-    system_prompt = (
-        "You are a UI Generator for a TRPG status window. Summarize the character's current state.\n\n"
-        "### OUTPUT FORMAT (JSON ONLY)\n"
-        "{\n"
-        "  \"appearance_summary\": \"Extract a concise 1-sentence visual summary from the Description (e.g., 'A scarred knight in worn leather armor').\",\n"
-        "  \"assets_summary\": \"Summarize wealth/items. If inventory provided, list key items. If not, infer from context (e.g., '50 Gold coins, Rusty Sword').\",\n"
-        "  \"relationships\": [ \n"
-        "      \"NPC_Name: Relationship_Keyword (Max 3 words)\" \n"
-        "  ] \n"
-        "}\n\n"
-        "### RULES\n"
-        "1. **Relationships:** Identify 3-5 most relevant NPCs from History/NPC List. Describe the bond strictly in 3 words or less (e.g., 'Enemy', 'Old Friend', 'Business Partner').\n"
-        "2. **Language:** Korean.\n"
-    )
+    last_idx = domain.get('last_export_idx', 0)
+    current_len = len(history)
+
+    start_idx = 0
+    export_type = "전체"
+
+    if mode in ["전체", "full", "all"]:
+        start_idx = 0
+        export_type = "전체(Full)"
+    else:
+        start_idx = last_idx
+        export_type = "증분(New Only)"
+
+    if start_idx >= current_len and export_type != "전체(Full)":
+        return None, "✅ 새로운 대화 내용이 없습니다. (이미 최신 상태입니다)\n처음부터 다시 뽑으려면 `!추출 전체`를 입력하세요."
+
+    export_lines = [
+        f"=== Lorekeeper Session Log [{export_type}] ===",
+        f"Export Time: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Range: Msg {start_idx + 1} ~ {current_len}\n",
+        "-" * 40
+    ]
+
+    target_history = history[start_idx:]
+    for entry in target_history:
+        role = entry.get('role', 'Unknown')
+        content = entry.get('content', '')
+        if role == 'User': export_lines.append(f"[Player]: {content}")
+        elif role == 'Char': export_lines.append(f"[Story]: {content}")
+        elif role == 'System': export_lines.append(f"[System]: {content}")
+        else: export_lines.append(f"[{role}]: {content}")
+        export_lines.append("")
+
+    domain['last_export_idx'] = current_len
+    domain_manager.save_domain(channel_id, domain)
+
+    return "\n".join(export_lines), f"📜 **대화 로그 추출 완료 ({export_type})**\n(총 {len(target_history)}개의 메시지를 저장했습니다.)"
+
+def export_lore_book_file(channel_id):
+    """
+    [연대기 추출] 요약된 연대기(Lore) 목록을 텍스트 파일로 추출
+    """
+    board = _get_board(channel_id)
+    lore = board.get("lore", [])
     
-    user_prompt = (
-        f"### Full Description\n{current_desc}\n\n"
-        f"### Inventory Data\n{inv_text}\n\n"
-        f"### Known NPCs\n{npc_list_text}\n\n"
-        f"### Recent History (For Relationships)\n{history_text}\n\n"
-        "Task: Generate Status Window View."
-    )
-    
-    res = await call_gemini_api(client, model_id, user_prompt, system_prompt)
-    
-    if isinstance(res, dict):
-        return res
-    return None
+    if not lore: return None, "❌ 기록된 연대기가 없습니다. `!연대기 생성`을 먼저 진행해주세요."
+
+    export_lines = [
+        "=== Lorekeeper Chronicles (Summary) ===",
+        f"Export Time: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Total Entries: {len(lore)}\n",
+        "-" * 40
+    ]
+
+    for i, entry in enumerate(lore):
+        title = entry.get("title", "Untitled")
+        content = entry.get("content", "")
+        timestamp = entry.get("timestamp", 0)
+        date_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(timestamp))
+        
+        export_lines.append(f"#{i+1}. {title} [{date_str}]")
+        export_lines.append(content)
+        export_lines.append("-" * 20)
+        export_lines.append("")
+
+    return "\n".join(export_lines), f"📖 **연대기 추출 완료** (총 {len(lore)}개의 기록)"

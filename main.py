@@ -4,13 +4,11 @@ import asyncio
 import logging
 import io
 import re
-from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
 # 필수 모듈 임포트
-# (여기서 에러가 났던 이유는 persona.py가 깨져서 그랬던 것입니다. 이제 괜찮습니다.)
 try:
     import persona, domain_manager, character_sheet, input_handler, simulation_manager, memory_system, session_manager, world_manager, quest_manager
 except ImportError as e:
@@ -18,18 +16,7 @@ except ImportError as e:
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 
-# [서버 설정 강화] .env 파일 경로 명시
-# systemd(24시간 서버)는 .env 위치를 못 찾을 수 있으므로 절대 경로를 지정해줍니다.
-env_path = Path('/home/ubuntu/lorekeeper/.env')
-
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-    print(f"✅ Loaded .env from Server Path: {env_path}")
-else:
-    # 윈도우나 다른 환경에서 실행할 때를 대비한 기본 로드
-    load_dotenv()
-    print("⚠️ Loaded .env from default location (Local Mode)")
-
+load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 MODEL_ID = os.getenv('GEMINI_MODEL_VERSION', 'gemini-3-flash-preview')
@@ -72,8 +59,6 @@ async def on_message(message):
         domain_data = domain_manager.get_domain(channel_id)
         is_locked = domain_data['settings'].get('session_locked', False)
         
-        # [핵심 수정] 참가자가 아니어도(초기 세팅 중) 사용할 수 있는 명령어 목록 확장
-        # 로어, 룰, 시스템 등 초기 설정 명령어를 허용해야 함
         entry_commands = [
             '준비', 'ready', '리셋', 'reset', '시작', 'start', '가면', 'mask', '초기화',
             '로어', 'lore', '룰', 'rule', '시스템', 'system' 
@@ -137,13 +122,12 @@ async def on_message(message):
                     elif args[1] == '삭제': return await message.channel.send(f"🛠️ {quest_manager.remove_memo(channel_id, args[2])}")
                 return await message.channel.send("⚠️ 알 수 없는 치트 명령")
 
-            # --- [로어 명령어 개선] ---
+            # --- [로어 명령어] ---
             if cmd in ['lore', '로어']:
                 arg = parsed['content'].strip()
                 file_text = ""
                 is_file_processed = False
                 
-                # 파일 처리 로직 강화: 다양한 텍스트 확장자 지원
                 if message.attachments:
                     for att in message.attachments:
                         if any(att.filename.lower().endswith(ext) for ext in ['.txt', '.md', '.json', '.log', '.py', '.yaml', '.yml']):
@@ -161,7 +145,6 @@ async def on_message(message):
 
                 full = (arg + "\n" + file_text).strip()
                 
-                # 내용이 없으면 조회 모드
                 if not full:
                     summary = domain_manager.get_lore_summary(channel_id)
                     display_text = summary if summary else domain_manager.get_lore(channel_id)
@@ -174,7 +157,6 @@ async def on_message(message):
                     domain_manager.reset_lore(channel_id); domain_manager.set_active_genres(channel_id, ["noir"]); domain_manager.set_custom_tone(channel_id, None)
                     return await message.channel.send("📜 초기화됨")
                 
-                # 로어 저장 및 분석
                 if file_text: domain_manager.reset_lore(channel_id) 
                 domain_manager.append_lore(channel_id, full)
                 
@@ -230,8 +212,14 @@ async def on_message(message):
                 if not p: return await message.channel.send("❌ 정보 없음")
                 if not client_genai: return await message.channel.send(f"👤 **[{p.get('mask')}]**\n{p.get('description')}")
                 wait_msg = await message.channel.send("⏳ **[AI]** 분석 중...")
+                
+                # AI 분석 실행
                 view_data = await quest_manager.generate_character_info_view(client_genai, MODEL_ID, channel_id, uid, p.get('description', ''), p.get('inventory', {}))
+                
                 if view_data:
+                    # 분석된 요약 정보를 domain_manager에 저장 (매 턴마다 AI에게 전달됨)
+                    domain_manager.save_participant_summary(channel_id, uid, view_data)
+                    
                     final_msg = f"👤 **[{p.get('mask')}]**\n👁️ **외형:** {view_data.get('appearance_summary')}\n💰 **재산:** {view_data.get('assets_summary')}\n🤝 **관계:**\n" + "\n".join([f"- {r}" for r in view_data.get("relationships", [])])
                     await wait_msg.delete(); return await send_long_message(message.channel, final_msg)
                 else: await wait_msg.edit(content="⚠️ 분석 실패")
@@ -255,12 +243,29 @@ async def on_message(message):
                 return await send_long_message(message.channel, f"📘 **현재 룰:**\n{domain_manager.get_rules(channel_id)}")
             
             if cmd in ['lores', '연대기']: 
-                if parsed['content'] == "생성":
-                    msg = await message.channel.send("⏳ 생성 중...")
-                    res = await quest_manager.generate_chronicle_from_history(client_genai, MODEL_ID, channel_id)
+                arg = parsed['content'].strip()
+                
+                # 1. 연대기 생성 (AI 요약)
+                if arg == "생성":
+                    msg = await message.channel.send("⏳ **[AI]** 현재까지의 이야기를 연대기로 요약 중입니다...")
+                    if not client_genai: return await msg.edit(content="⚠️ AI 미연동 상태입니다.")
+                    
+                    result_text = await quest_manager.generate_chronicle_from_history(client_genai, MODEL_ID, channel_id)
+                    
                     try: await msg.delete()
                     except: pass
-                    return await send_long_message(message.channel, res)
+                    
+                    return await send_long_message(message.channel, result_text)
+                
+                # 2. 연대기 추출 (파일 다운로드) - [NEW]
+                elif arg == "추출":
+                    txt_data, msg = quest_manager.export_lore_book_file(channel_id)
+                    if not txt_data: return await message.channel.send(msg)
+                    
+                    with io.BytesIO(txt_data.encode('utf-8')) as f:
+                        return await message.channel.send(msg, file=discord.File(f, filename="chronicles.txt"))
+
+                # 3. 연대기 목록 조회 (기본)
                 return await send_long_message(message.channel, quest_manager.get_lore_book(channel_id))
                 
             if cmd in ['export', '추출']:
@@ -269,8 +274,30 @@ async def on_message(message):
                 if not ch: return await message.channel.send(msg)
                 with io.BytesIO(f"=== LORE ===\n{lore}\n\n{ch}".encode('utf-8')) as f: return await message.channel.send(msg, file=discord.File(f, filename="export.txt"))
 
+            # NPC 정보 조회
+            if cmd == 'npc_info':
+                npc_name = parsed.get('content', '').strip()
+                if not npc_name:
+                    # 인자가 없으면 전체 NPC 목록을 보여줌
+                    summary = character_sheet.get_npc_summary(channel_id)
+                    if not summary: return await message.channel.send("⚠️ 등록된 NPC가 없습니다.")
+                    return await send_long_message(message.channel, f"👥 **NPC 목록**\n{summary}")
+                
+                # 특정 NPC 조회
+                npcs = domain_manager.get_npcs(channel_id)
+                npc_data = npcs.get(npc_name)
+                
+                if npc_data:
+                    status = npc_data.get('status', 'Active')
+                    desc = npc_data.get('desc', '설명 없음')
+                    return await message.channel.send(f"👤 **{npc_name}** ({status})\n{desc}")
+                else:
+                    return await message.channel.send(f"⚠️ '{npc_name}'라는 NPC를 찾을 수 없습니다.")
+
         if parsed['type'] == 'dice':
-            await message.channel.send(parsed['content']); domain_manager.append_history(channel_id, "System", f"Dice: {parsed['content']}"); return 
+            await message.channel.send(parsed['content'])
+            domain_manager.append_history(channel_id, "System", f"Dice: {parsed['content']}")
+            return 
 
         if parsed['type'] == 'command' and not system_trigger: return
         domain = domain_manager.get_domain(channel_id)
