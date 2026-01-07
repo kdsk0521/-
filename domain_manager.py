@@ -428,6 +428,29 @@ def set_growth_system(channel_id: str, mode: str) -> None:
     save_domain(channel_id, d)
 
 
+def get_thinking_mode(channel_id: str) -> str:
+    """
+    Thinking 모드를 가져옵니다.
+    
+    Returns:
+        'auto': 자동 조절 (기본값)
+        'minimal'/'low'/'medium'/'high': 수동 고정
+    """
+    return get_domain(channel_id)["settings"].get("thinking_mode", "auto")
+
+
+def set_thinking_mode(channel_id: str, mode: str) -> None:
+    """
+    Thinking 모드를 설정합니다.
+    
+    Args:
+        mode: 'auto', 'minimal', 'low', 'medium', 'high' 중 하나
+    """
+    d = get_domain(channel_id)
+    d["settings"]["thinking_mode"] = mode
+    save_domain(channel_id, d)
+
+
 def set_session_lock(channel_id: str, locked: bool) -> None:
     """세션 잠금 상태를 설정합니다."""
     d = get_domain(channel_id)

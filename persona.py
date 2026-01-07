@@ -10,7 +10,8 @@ Architecture:
 
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
+import re
+from typing import Optional, List, Dict, Any, Tuple
 from google import genai
 from google.genai import types
 
@@ -21,6 +22,250 @@ MAX_RETRY_COUNT = 3
 RETRY_DELAY_SECONDS = 1
 DEFAULT_TEMPERATURE = 1.0
 MIN_NARRATIVE_LENGTH = 1000  # 최소 서사 길이 (문자)
+
+# =========================================================
+# THINKING LEVEL 자동 조절 시스템
+# 상황 복잡도에 따라 AI 추론 깊이를 동적으로 조절
+# =========================================================
+
+# Thinking Level 정의
+THINKING_LEVELS = {
+    "minimal": 0,  # 단순 행동, 이동
+    "low": 1,      # 일반 대화, 간단한 상호작용
+    "medium": 2,   # NPC 대화, 판정, 전투
+    "high": 3      # 복잡한 추리, 음모, 중요 결정
+}
+
+# 기본 Thinking Level
+DEFAULT_THINKING_LEVEL = "low"
+
+# Thinking Level별 최소 응답 길이 (글자 수)
+MIN_RESPONSE_LENGTH = {
+    "minimal": 300,   # 단순 행동: 간결하게
+    "low": 500,       # 일반 대화: 적당히
+    "medium": 800,    # 전투/상호작용: 상세하게
+    "high": 1200      # 중요 장면: 풍부하게
+}
+
+# Thinking Level별 권장 최대 길이 (토큰 절약용, 강제 아님)
+MAX_RESPONSE_LENGTH = {
+    "minimal": 600,
+    "low": 1000,
+    "medium": 1500,
+    "high": 2500
+}
+
+# 복잡도 판단 키워드
+COMPLEXITY_KEYWORDS = {
+    # HIGH (복잡한 추론 필요)
+    "high": [
+        # 추리/수수께끼
+        "추리", "수수께끼", "단서", "증거", "조사", "분석", "추론",
+        "mystery", "clue", "evidence", "investigate", "deduce",
+        # 협상/설득
+        "설득", "협상", "거래", "계약", "협박", "회유",
+        "persuade", "negotiate", "convince", "deal",
+        # 전략/계획
+        "작전", "전략", "계획", "함정", "매복", "기습",
+        "strategy", "plan", "ambush", "trap",
+        # 중요 결정
+        "선택", "결정", "운명", "갈림길", "결과",
+        "choice", "decision", "fate", "consequence",
+        # 복잡한 마법/능력
+        "의식", "주문", "봉인", "소환", "해제",
+        "ritual", "spell", "seal", "summon",
+    ],
+    
+    # MEDIUM (보통 추론)
+    "medium": [
+        # 전투
+        "공격", "방어", "회피", "전투", "싸움", "적",
+        "attack", "defend", "dodge", "fight", "combat", "enemy",
+        # NPC 상호작용
+        "대화", "질문", "요청", "부탁", "거절", "동의",
+        "talk", "ask", "request", "refuse", "agree",
+        # 기술 사용
+        "자물쇠", "함정 해제", "치료", "수리", "제작",
+        "lockpick", "disarm", "heal", "repair", "craft",
+        # 탐색
+        "수색", "탐색", "찾다", "발견", "숨다",
+        "search", "explore", "find", "discover", "hide",
+    ],
+    
+    # LOW (간단한 추론) - 명시적 키워드 없음, 기본값
+    "low": [
+        "말하다", "묻다", "대답", "인사",
+        "say", "speak", "greet", "reply",
+    ],
+    
+    # MINIMAL (추론 거의 불필요)
+    "minimal": [
+        # 단순 이동
+        "이동", "걷다", "뛰다", "가다", "오다", "들어가다", "나가다",
+        "move", "walk", "run", "go", "come", "enter", "exit",
+        # 단순 동작
+        "앉다", "서다", "눕다", "기다리다", "쉬다",
+        "sit", "stand", "lie", "wait", "rest",
+        # 관찰
+        "보다", "듣다", "바라보다",
+        "look", "watch", "listen", "observe",
+    ]
+}
+
+# 상황 복잡도 부스터 (추가 점수)
+COMPLEXITY_BOOSTERS = {
+    # 위험 상황
+    "danger_keywords": ["위험", "죽음", "생사", "절체절명", "danger", "death", "fatal"],
+    "danger_boost": 1,
+    
+    # 다중 NPC
+    "multi_npc_pattern": r"(와|과|,|그리고).*(에게|와|과)",
+    "multi_npc_boost": 1,
+    
+    # 긴 입력 (복잡한 행동 묘사)
+    "long_input_threshold": 100,  # 글자 수
+    "long_input_boost": 1,
+}
+
+
+def analyze_input_complexity(user_input: str, context: Dict[str, Any] = None) -> Tuple[str, str]:
+    """
+    사용자 입력의 복잡도를 분석하여 적절한 Thinking Level을 결정합니다.
+    
+    Args:
+        user_input: 사용자 입력 텍스트
+        context: 추가 컨텍스트 (위치 위험도, 활성 퀘스트 등)
+    
+    Returns:
+        (thinking_level, reason) 튜플
+    """
+    if not user_input:
+        return DEFAULT_THINKING_LEVEL, "기본값"
+    
+    input_lower = user_input.lower()
+    score = 0
+    reasons = []
+    
+    # 1. 키워드 기반 점수 계산
+    for level, keywords in COMPLEXITY_KEYWORDS.items():
+        level_score = THINKING_LEVELS.get(level, 1)
+        for keyword in keywords:
+            if keyword in input_lower:
+                if level_score > score:
+                    score = level_score
+                    reasons = [f"키워드: {keyword}"]
+                elif level_score == score:
+                    reasons.append(f"키워드: {keyword}")
+                break  # 해당 레벨에서 하나만 찾으면 됨
+    
+    # 2. 복잡도 부스터 적용
+    # 위험 키워드
+    for danger_kw in COMPLEXITY_BOOSTERS["danger_keywords"]:
+        if danger_kw in input_lower:
+            score += COMPLEXITY_BOOSTERS["danger_boost"]
+            reasons.append("위험 상황")
+            break
+    
+    # 다중 NPC 패턴
+    if re.search(COMPLEXITY_BOOSTERS["multi_npc_pattern"], user_input):
+        score += COMPLEXITY_BOOSTERS["multi_npc_boost"]
+        reasons.append("다중 대상")
+    
+    # 긴 입력
+    if len(user_input) > COMPLEXITY_BOOSTERS["long_input_threshold"]:
+        score += COMPLEXITY_BOOSTERS["long_input_boost"]
+        reasons.append("복잡한 행동")
+    
+    # 3. 컨텍스트 기반 조정
+    if context:
+        # 위험 지역
+        risk_level = context.get("risk_level", "").lower()
+        if "high" in risk_level or "extreme" in risk_level:
+            score += 1
+            reasons.append("고위험 지역")
+        
+        # Doom 수치
+        doom = context.get("doom", 0)
+        if doom >= 70:
+            score += 1
+            reasons.append(f"Doom {doom}%")
+    
+    # 4. 최종 레벨 결정
+    if score >= 3:
+        level = "high"
+    elif score >= 2:
+        level = "medium"
+    elif score >= 1:
+        level = "low"
+    else:
+        level = "minimal"
+    
+    reason = ", ".join(reasons[:3]) if reasons else "기본값"
+    return level, reason
+
+
+def get_thinking_config(thinking_level: str = DEFAULT_THINKING_LEVEL) -> Dict[str, Any]:
+    """
+    Thinking Level에 따른 GenerateContentConfig 파라미터를 반환합니다.
+    
+    Args:
+        thinking_level: minimal, low, medium, high 중 하나
+    
+    Returns:
+        config에 추가할 파라미터 딕셔너리
+    """
+    # Gemini 3 Flash의 thinking_level 파라미터
+    return {
+        "thinking_level": thinking_level
+    }
+
+
+def get_length_requirements(thinking_level: str = DEFAULT_THINKING_LEVEL) -> Dict[str, int]:
+    """
+    Thinking Level에 따른 응답 길이 요구사항을 반환합니다.
+    
+    Args:
+        thinking_level: minimal, low, medium, high 중 하나
+    
+    Returns:
+        {"min": 최소 길이, "max": 권장 최대 길이}
+    """
+    return {
+        "min": MIN_RESPONSE_LENGTH.get(thinking_level, 500),
+        "max": MAX_RESPONSE_LENGTH.get(thinking_level, 1000)
+    }
+
+
+def build_length_instruction(thinking_level: str = DEFAULT_THINKING_LEVEL) -> str:
+    """
+    Thinking Level에 맞는 길이 지시문을 생성합니다.
+    
+    Args:
+        thinking_level: minimal, low, medium, high 중 하나
+    
+    Returns:
+        AI에게 전달할 길이 지시 문자열
+    """
+    lengths = get_length_requirements(thinking_level)
+    min_len = lengths["min"]
+    max_len = lengths["max"]
+    
+    level_desc = {
+        "minimal": "간결하고 빠르게",
+        "low": "적당한 분량으로",
+        "medium": "상세하고 몰입감 있게",
+        "high": "풍부하고 깊이 있게"
+    }
+    
+    desc = level_desc.get(thinking_level, "적당히")
+    
+    return (
+        f"### [RESPONSE LENGTH DIRECTIVE]\n"
+        f"Scene Complexity: **{thinking_level.upper()}**\n"
+        f"Write {desc}. Target: {min_len}~{max_len} characters (Korean).\n"
+        f"- Minimum {min_len} chars required for narrative depth.\n"
+        f"- Avoid exceeding {max_len} chars to maintain pacing.\n"
+    )
 
 # =========================================================
 # AI MANDATE (AI 위임장)
@@ -828,7 +1073,8 @@ def create_risu_style_session(
     lore_text: str,
     rule_text: str = "",
     active_genres: Optional[List[str]] = None,
-    custom_tone: Optional[str] = None
+    custom_tone: Optional[str] = None,
+    thinking_level: str = DEFAULT_THINKING_LEVEL
 ) -> ChatSessionAdapter:
     """
     RisuAI 스타일의 세션을 생성합니다.
@@ -840,6 +1086,7 @@ def create_risu_style_session(
         rule_text: 게임 규칙 텍스트
         active_genres: 활성 장르 리스트
         custom_tone: 커스텀 분위기/톤
+        thinking_level: AI 추론 깊이 (minimal/low/medium/high)
     
     Returns:
         설정된 ChatSessionAdapter 인스턴스
@@ -886,10 +1133,14 @@ Recording in Korean. Awaiting observable events.
         )
     ]
     
-    # 설정 구성
+    # 설정 구성 (Thinking Level 포함)
+    # Gemini 3 Flash는 thinking_level 파라미터 지원
+    thinking_config = get_thinking_config(thinking_level)
+    
     config = types.GenerateContentConfig(
         temperature=DEFAULT_TEMPERATURE,
-        safety_settings=SAFETY_SETTINGS
+        safety_settings=SAFETY_SETTINGS,
+        **thinking_config  # thinking_level 추가
     )
     
     return ChatSessionAdapter(
@@ -906,36 +1157,82 @@ Recording in Korean. Awaiting observable events.
 async def generate_response_with_retry(
     client,
     chat_session: ChatSessionAdapter,
-    user_input: str
+    user_input: str,
+    thinking_level: str = DEFAULT_THINKING_LEVEL
 ) -> str:
     """
     재시도 로직을 포함하여 응답을 생성합니다.
+    Thinking Level에 따른 동적 길이 요구사항을 적용합니다.
     
     Args:
         client: Gemini 클라이언트 (현재 미사용, 호환성 유지)
         chat_session: 채팅 세션 어댑터
         user_input: 사용자 입력
+        thinking_level: 현재 Thinking Level
     
     Returns:
         생성된 응답 텍스트
     """
-    # 시스템 리마인더 추가
+    # 길이 요구사항 가져오기
+    length_req = get_length_requirements(thinking_level)
+    min_length = length_req["min"]
+    max_length = length_req["max"]
+    
+    # 길이 지시문 생성
+    length_instruction = build_length_instruction(thinking_level)
+    
+    # 시스템 리마인더 추가 (길이 지시 포함)
     hidden_reminder = (
-        "\n\n(System Reminder: Record observable Macroscopic States only. "
-        "The world continues asynchronously. End with 'Suggested Actions' in Korean.)"
+        f"\n\n{length_instruction}\n"
+        f"(System Reminder: Record observable Macroscopic States only. "
+        f"The world continues asynchronously. End with 'Suggested Actions' in Korean.)"
     )
     full_input = user_input + hidden_reminder
+    
+    best_response = None
+    best_length = 0
     
     for attempt in range(MAX_RETRY_COUNT):
         try:
             response = await chat_session.send_message(full_input)
             
             if response and response.text:
-                return response.text
-            
-            logging.warning(
-                f"빈 응답 수신 (시도 {attempt + 1}/{MAX_RETRY_COUNT})"
-            )
+                response_text = response.text
+                response_length = len(response_text)
+                
+                # 길이 검증
+                if response_length >= min_length:
+                    # 최소 길이 충족 → 성공
+                    logging.info(
+                        f"[Length] OK: {response_length}자 "
+                        f"(요구: {min_length}~{max_length}, level: {thinking_level})"
+                    )
+                    return response_text
+                else:
+                    # 최소 길이 미달 → 더 나은 응답 저장 후 재시도
+                    logging.warning(
+                        f"[Length] SHORT: {response_length}자 < {min_length}자 "
+                        f"(시도 {attempt + 1}/{MAX_RETRY_COUNT})"
+                    )
+                    
+                    # 가장 긴 응답 보관 (최종 폴백용)
+                    if response_length > best_length:
+                        best_response = response_text
+                        best_length = response_length
+                    
+                    # 재시도 시 더 강한 길이 요청
+                    if attempt < MAX_RETRY_COUNT - 1:
+                        full_input = (
+                            f"{user_input}\n\n"
+                            f"⚠️ **[LENGTH WARNING]** Previous response was {response_length} chars. "
+                            f"MUST write at least {min_length} chars. "
+                            f"Add more sensory details, NPC reactions, and environmental descriptions.\n"
+                            f"{hidden_reminder}"
+                        )
+            else:
+                logging.warning(
+                    f"빈 응답 수신 (시도 {attempt + 1}/{MAX_RETRY_COUNT})"
+                )
             
         except Exception as e:
             logging.warning(
@@ -944,6 +1241,13 @@ async def generate_response_with_retry(
         
         if attempt < MAX_RETRY_COUNT - 1:
             await asyncio.sleep(RETRY_DELAY_SECONDS)
+    
+    # 모든 시도 실패 → 가장 좋았던 응답 반환 (있다면)
+    if best_response:
+        logging.warning(
+            f"[Length] FALLBACK: 최소 길이 미달이지만 반환 ({best_length}자)"
+        )
+        return best_response
     
     return "⚠️ **[시스템 경고]** 기록 장치 오류. 잠시 후 다시 시도해주세요."
 

@@ -215,6 +215,23 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             'consistency': 'consistency',
             '세계규칙': 'worldrules',
             'worldrules': 'worldrules',
+            '예측': 'forecast',
+            'forecast': 'forecast',
+            '둠': 'doom',
+            'doom': 'doom',
+            
+            # === Thinking Level 설정 ===
+            '사고': 'thinking',
+            'thinking': 'thinking',
+            '추론': 'thinking',
+            
+            # === 상태이상 ===
+            '버프': 'buff',
+            'buff': 'buff',
+            '디버프': 'debuff',
+            'debuff': 'debuff',
+            '상태이상': 'effects',
+            'effects': 'effects',
             
             # === 주사위 (통합) ===
             '주사위': 'roll',

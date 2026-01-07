@@ -52,7 +52,7 @@ logging.basicConfig(
 load_dotenv()
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
-MODEL_ID = os.getenv('GEMINI_MODEL_VERSION', 'gemini-2.0-flash')
+MODEL_ID = os.getenv('GEMINI_MODEL_VERSION', 'gemini-3-flash-preview')  # Gemini 3 Flash 사용
 
 # =========================================================
 # API 클라이언트 초기화
@@ -261,32 +261,87 @@ async def handle_lore_command(message, channel_id: str, arg: str) -> None:
         domain_manager.reset_lore(channel_id)  # 파일 업로드 시 기존 로어 리셋
     
     domain_manager.append_lore(channel_id, full)
-    status_msg = await message.channel.send("📜 **로어 저장됨.** (AI 분석 준비 중...)")
+    
+    # 로어 크기 확인
+    raw_lore = domain_manager.get_lore(channel_id)
+    lore_length = len(raw_lore)
+    
+    # 대용량 로어 여부 판단 (15000자 이상)
+    is_massive = lore_length > 15000
+    
+    if is_massive:
+        estimated_chunks = (lore_length // 15000) + 1
+        status_msg = await message.channel.send(
+            f"📜 **로어 저장됨** ({lore_length:,}자 감지)\n"
+            f"📚 대용량 로어 처리 모드 활성화 (약 {estimated_chunks}개 청크)\n"
+            f"⏳ 처리 시간: 약 {estimated_chunks * 10}~{estimated_chunks * 20}초 예상..."
+        )
+    else:
+        status_msg = await message.channel.send("📜 **로어 저장됨.** (AI 분석 준비 중...)")
     
     # AI 분석
     if client_genai:
         try:
-            await status_msg.edit(content="⏳ **[AI]** 방대한 세계관을 압축하여 요약본을 생성하고 있습니다... (최대 10초 소요)")
-            raw_lore = domain_manager.get_lore(channel_id)
-            summary = await memory_system.compress_lore_core(client_genai, MODEL_ID, raw_lore)
-            domain_manager.save_lore_summary(channel_id, summary)
+            # 대용량 로어 처리
+            if is_massive:
+                async def progress_callback(stage, current, total):
+                    stage_names = {
+                        "splitting": "📂 청크 분할",
+                        "compressing": "🗜️ 청크 압축",
+                        "merging": "🔗 중간 병합",
+                        "finalizing": "✨ 최종 통합"
+                    }
+                    stage_name = stage_names.get(stage, stage)
+                    await status_msg.edit(
+                        content=f"📚 **[대용량 로어 처리 중]**\n"
+                                f"{stage_name}: {current}/{total}"
+                    )
+                
+                summary, metadata = await memory_system.process_massive_lore(
+                    client_genai, MODEL_ID, raw_lore, progress_callback
+                )
+                
+                domain_manager.save_lore_summary(channel_id, summary)
+                
+                await status_msg.edit(
+                    content=f"📚 **[대용량 처리 완료]**\n"
+                            f"• 원본: {metadata['original_length']:,}자\n"
+                            f"• 압축: {metadata['final_length']:,}자\n"
+                            f"• 압축률: {metadata['compression_ratio']}:1\n"
+                            f"• 처리 시간: {metadata['processing_time']}초\n"
+                            f"• 방식: {metadata['method']}\n\n"
+                            f"⏳ 장르/NPC 분석 중..."
+                )
+            else:
+                await status_msg.edit(content="⏳ **[AI]** 세계관 압축 중...")
+                summary = await memory_system.compress_lore_core(client_genai, MODEL_ID, raw_lore)
+                domain_manager.save_lore_summary(channel_id, summary)
             
+            # 장르 분석 (요약본 기반으로 수행 - 토큰 절약)
             await status_msg.edit(content="⏳ **[AI]** 장르 및 NPC 데이터 추출 중...")
-            res = await memory_system.analyze_genre_from_lore(client_genai, MODEL_ID, raw_lore)
+            
+            # 대용량일 경우 요약본으로 분석, 아니면 원본으로
+            analysis_text = summary if is_massive else raw_lore
+            
+            res = await memory_system.analyze_genre_from_lore(client_genai, MODEL_ID, analysis_text)
             domain_manager.set_active_genres(channel_id, res.get("genres", ["noir"]))
             domain_manager.set_custom_tone(channel_id, res.get("custom_tone"))
             
-            npcs = await memory_system.analyze_npcs_from_lore(client_genai, MODEL_ID, raw_lore)
+            npcs = await memory_system.analyze_npcs_from_lore(client_genai, MODEL_ID, analysis_text)
             for n in npcs:
                 character_sheet.npc_memory.add_npc(channel_id, n.get("name"), n.get("description"))
             
-            rules = await memory_system.analyze_location_rules_from_lore(client_genai, MODEL_ID, raw_lore)
+            rules = await memory_system.analyze_location_rules_from_lore(client_genai, MODEL_ID, analysis_text)
             if rules:
                 domain_manager.set_location_rules(channel_id, rules)
             
-            await status_msg.edit(
-                content=f"✅ **[완료]** 핵심 요약본 및 분석 완료.\n**장르:** {res.get('genres')}"
-            )
+            # 최종 메시지
+            final_msg = f"✅ **[분석 완료]**\n**장르:** {res.get('genres')}"
+            if is_massive:
+                final_msg += f"\n**압축률:** {metadata['compression_ratio']}:1 ({metadata['original_length']:,}자 → {metadata['final_length']:,}자)"
+            
+            await status_msg.edit(content=final_msg)
+            
         except Exception as e:
             logging.error(f"Lore Analysis Error: {e}")
             await status_msg.edit(content=f"⚠️ **분석 중 오류 발생:** {e}")
@@ -618,6 +673,36 @@ async def on_message(message):
                     await message.channel.send(result)
                 return
             
+            # --- 경험치 확인 ---
+            if cmd == 'xp':
+                uid = str(message.author.id)
+                p_data = domain_manager.get_participant_data(channel_id, uid)
+                if not p_data:
+                    await message.channel.send("❌ 캐릭터가 없습니다. `!가면`으로 먼저 등록하세요.")
+                    return
+                
+                mask = p_data.get("mask", "Unknown")
+                level = p_data.get("level", 1)
+                xp = p_data.get("xp", 0)
+                next_xp = p_data.get("next_xp", 100)
+                growth_system = domain_manager.get_growth_system(channel_id)
+                
+                # 성장 시스템에 따른 표시
+                if growth_system == "hunter":
+                    rank = simulation_manager.get_hunter_rank(level)
+                    await message.channel.send(
+                        f"📊 **[{mask}]** 경험치 현황\n"
+                        f"등급: {rank}\n"
+                        f"경험치: {xp}/{next_xp}"
+                    )
+                else:
+                    await message.channel.send(
+                        f"📊 **[{mask}]** 경험치 현황\n"
+                        f"레벨: {level}\n"
+                        f"경험치: {xp}/{next_xp}"
+                    )
+                return
+            
             # --- 로어 명령어 ---
             if cmd == 'lore':
                 await handle_lore_command(message, channel_id, parsed['content'].strip())
@@ -677,6 +762,53 @@ async def on_message(message):
                     message.channel,
                     quest_manager.get_status_message(channel_id)
                 )
+                return
+            
+            # --- 퀘스트/메모 직접 명령어 ---
+            if cmd == 'quest':
+                arg = parsed['content'].strip()
+                if not arg:
+                    # 퀘스트 목록 표시
+                    await send_long_message(
+                        message.channel,
+                        quest_manager.get_active_quests_text(channel_id)
+                    )
+                else:
+                    # 퀘스트 추가
+                    result = quest_manager.add_quest(channel_id, arg)
+                    await message.channel.send(result)
+                return
+            
+            if cmd == 'memo':
+                arg = parsed['content'].strip()
+                if not arg:
+                    # 메모 목록 표시
+                    await send_long_message(
+                        message.channel,
+                        quest_manager.get_memos_text(channel_id)
+                    )
+                else:
+                    # 메모 추가
+                    result = quest_manager.add_memo(channel_id, arg)
+                    await message.channel.send(result)
+                return
+            
+            if cmd == 'complete':
+                arg = parsed['content'].strip()
+                if not arg:
+                    await message.channel.send("⚠️ 사용법: `!완료 [퀘스트 내용 일부]`")
+                    return
+                result = quest_manager.complete_quest(channel_id, arg)
+                await message.channel.send(result)
+                return
+            
+            if cmd == 'archive':
+                arg = parsed['content'].strip()
+                if not arg:
+                    await message.channel.send("⚠️ 사용법: `!보관 [메모 내용 일부]`")
+                    return
+                result = quest_manager.resolve_memo_auto(channel_id, arg)
+                await message.channel.send(result)
                 return
             
             # --- 참가자 상태 ---
@@ -860,6 +992,172 @@ async def on_message(message):
                 else:
                     await message.channel.send("⚠️ 세계 규칙 추출 실패")
                 return
+            
+            # --- Doom 예측 ---
+            if cmd == 'forecast':
+                forecast_msg = world_manager.get_doom_forecast(channel_id)
+                await send_long_message(message.channel, forecast_msg)
+                return
+            
+            # --- Doom 수동 조절 ---
+            if cmd == 'doom':
+                arg = parsed.get('content', '').strip()
+                if not arg:
+                    # 현재 상태 표시
+                    status = world_manager.get_doom_status(channel_id)
+                    await message.channel.send(
+                        f"📊 **위기 수치:** {status['value']}% ({status['description']})\n"
+                        f"{'🚨 위험!' if status['is_danger'] else '✅ 안전'}"
+                    )
+                    return
+                
+                try:
+                    amount = int(arg)
+                    result = world_manager.change_doom(channel_id, amount)
+                    await message.channel.send(result)
+                    
+                    # 이벤트 트리거 확인
+                    event = world_manager.trigger_doom_event(channel_id)
+                    if event:
+                        await message.channel.send(event)
+                except ValueError:
+                    await message.channel.send("⚠️ 사용법: `!둠 [+/-숫자]` 또는 `!둠` (현재 상태)")
+                return
+            
+            # --- Thinking Level 설정 ---
+            if cmd == 'thinking':
+                arg = parsed.get('content', '').strip().lower()
+                
+                valid_modes = ['auto', 'minimal', 'low', 'medium', 'high']
+                
+                if not arg:
+                    # 현재 상태 표시
+                    current_mode = domain_manager.get_thinking_mode(channel_id)
+                    mode_desc = {
+                        'auto': '🤖 자동 (상황에 따라 조절)',
+                        'minimal': '⚡ 최소 (빠름, 저비용)',
+                        'low': '💭 낮음 (일반 대화)',
+                        'medium': '🧠 보통 (전투, NPC 대화)',
+                        'high': '🎓 높음 (추리, 복잡한 상황)'
+                    }
+                    
+                    # 길이 정보 표시
+                    length_info = ""
+                    for level in ['minimal', 'low', 'medium', 'high']:
+                        lengths = persona.get_length_requirements(level)
+                        length_info += f"• `{level}`: {lengths['min']}~{lengths['max']}자\n"
+                    
+                    await message.channel.send(
+                        f"🧠 **Thinking Level 설정**\n\n"
+                        f"현재: **{mode_desc.get(current_mode, current_mode)}**\n\n"
+                        f"**레벨별 응답 길이:**\n{length_info}\n"
+                        f"사용법: `!사고 [auto/minimal/low/medium/high]`\n"
+                        f"• `auto`: 상황 복잡도에 따라 자동 조절 (권장)\n"
+                        f"• `minimal`: 단순 행동에 적합, 비용 최소\n"
+                        f"• `low`: 일반 대화에 적합\n"
+                        f"• `medium`: 전투, NPC 상호작용\n"
+                        f"• `high`: 추리, 협상, 중요 결정"
+                    )
+                    return
+                
+                if arg in valid_modes:
+                    domain_manager.set_thinking_mode(channel_id, arg)
+                    mode_emoji = {'auto': '🤖', 'minimal': '⚡', 'low': '💭', 'medium': '🧠', 'high': '🎓'}
+                    
+                    # 변경된 모드의 길이 정보 표시
+                    if arg != 'auto':
+                        lengths = persona.get_length_requirements(arg)
+                        length_msg = f" (응답 길이: {lengths['min']}~{lengths['max']}자)"
+                    else:
+                        length_msg = " (상황에 따라 300~1200자)"
+                    
+                    await message.channel.send(
+                        f"{mode_emoji.get(arg, '🧠')} **Thinking Level 변경:** `{arg}`{length_msg}"
+                    )
+                else:
+                    await message.channel.send(
+                        f"⚠️ 올바른 모드를 입력하세요: {', '.join(valid_modes)}"
+                    )
+                return
+            
+            # --- 상태이상 명령어 ---
+            if cmd == 'effects':
+                uid = str(message.author.id)
+                p_data = domain_manager.get_participant_data(channel_id, uid)
+                
+                if not p_data:
+                    await message.channel.send("⚠️ 캐릭터가 없습니다. `!가면`으로 먼저 생성하세요.")
+                    return
+                
+                summary = simulation_manager.get_status_summary(p_data)
+                await message.channel.send(summary)
+                return
+            
+            if cmd == 'buff':
+                arg = parsed.get('content', '').strip()
+                uid = str(message.author.id)
+                p_data = domain_manager.get_participant_data(channel_id, uid)
+                
+                if not p_data:
+                    await message.channel.send("⚠️ 캐릭터가 없습니다.")
+                    return
+                
+                if not arg:
+                    # 버프 목록 표시
+                    buffs = [name for name, data in simulation_manager.STATUS_EFFECTS.items() 
+                             if data.get("type") == "buff"]
+                    await message.channel.send(
+                        f"✨ **사용 가능한 버프:**\n{', '.join(buffs)}\n\n"
+                        f"사용법: `!버프 [이름]` 또는 `!버프 제거 [이름]`"
+                    )
+                    return
+                
+                # 제거 명령
+                if arg.startswith("제거 ") or arg.startswith("remove "):
+                    effect_name = arg.split(" ", 1)[1]
+                    p_data, msg = simulation_manager.update_status_effect(p_data, "remove", effect_name)
+                else:
+                    p_data, msg = simulation_manager.update_status_effect(p_data, "add", arg)
+                
+                domain_manager.save_participant_data(channel_id, uid, p_data)
+                await message.channel.send(msg)
+                return
+            
+            if cmd == 'debuff':
+                arg = parsed.get('content', '').strip()
+                uid = str(message.author.id)
+                p_data = domain_manager.get_participant_data(channel_id, uid)
+                
+                if not p_data:
+                    await message.channel.send("⚠️ 캐릭터가 없습니다.")
+                    return
+                
+                if not arg:
+                    # 디버프 목록 표시 (카테고리별)
+                    physical = simulation_manager.get_all_status_effects_by_category("physical")
+                    mental = simulation_manager.get_all_status_effects_by_category("mental")
+                    environmental = simulation_manager.get_all_status_effects_by_category("environmental")
+                    social = simulation_manager.get_all_status_effects_by_category("social")
+                    
+                    msg = "💀 **상태이상 목록:**\n"
+                    msg += f"**물리:** {', '.join(physical)}\n"
+                    msg += f"**정신:** {', '.join(mental)}\n"
+                    msg += f"**환경:** {', '.join(environmental)}\n"
+                    msg += f"**사회:** {', '.join(social)}\n\n"
+                    msg += "사용법: `!디버프 [이름]` 또는 `!디버프 제거 [이름]`"
+                    
+                    await send_long_message(message.channel, msg)
+                    return
+                
+                # 제거 명령
+                if arg.startswith("제거 ") or arg.startswith("remove "):
+                    effect_name = arg.split(" ", 1)[1]
+                    p_data, msg = simulation_manager.update_status_effect(p_data, "remove", effect_name)
+                else:
+                    p_data, msg = simulation_manager.update_status_effect(p_data, "add", arg)
+                
+                domain_manager.save_participant_data(channel_id, uid, p_data)
+                await message.channel.send(msg)
         
         # =========================================================
         # 주사위 처리
@@ -958,10 +1256,32 @@ async def on_message(message):
             
             response = "⚠️ AI Error"
             if client_genai:
-                loading = await message.channel.send("⏳ **[Lorekeeper]** 집필 중...")
+                # Thinking Mode 확인 (auto 또는 수동 고정)
+                thinking_mode = domain_manager.get_thinking_mode(channel_id)
                 
+                if thinking_mode == "auto":
+                    # 자동: 상황에 따라 Thinking Level 결정
+                    thinking_context = {
+                        "risk_level": nvc_res.get("LocationRisk", "Low"),
+                        "doom": domain_manager.get_world_state(channel_id).get("doom", 0)
+                    }
+                    thinking_level, thinking_reason = persona.analyze_input_complexity(
+                        action_text, thinking_context
+                    )
+                else:
+                    # 수동: 고정된 Thinking Level 사용
+                    thinking_level = thinking_mode
+                    thinking_reason = "수동 설정"
+                
+                loading = await message.channel.send(
+                    f"⏳ **[Lorekeeper]** 집필 중... (🧠 {thinking_level})"
+                )
+                
+                # Thinking Level을 적용하여 세션 생성
                 session = persona.create_risu_style_session(
-                    client_genai, MODEL_ID, lore_txt, rule_txt, active_genres, custom_tone
+                    client_genai, MODEL_ID, lore_txt, rule_txt, 
+                    active_genres, custom_tone,
+                    thinking_level=thinking_level  # 동적 Thinking Level
                 )
                 
                 # 히스토리 추가
@@ -971,11 +1291,21 @@ async def on_message(message):
                         types.Content(role=role, parts=[types.Part(text=h['content'])])
                     )
                 
+                # 응답 생성 (동적 길이 적용)
                 response = await persona.generate_response_with_retry(
-                    client_genai, session, full_prompt
+                    client_genai, session, full_prompt,
+                    thinking_level=thinking_level  # 길이 요구사항 전달
                 )
                 
                 await safe_delete_message(loading)
+                
+                # 디버그: Thinking Level 및 응답 길이 로깅
+                if response:
+                    logging.info(
+                        f"[Thinking] Level: {thinking_level}, "
+                        f"Reason: {thinking_reason}, "
+                        f"Length: {len(response)}자"
+                    )
             
             # 결과 전송
             if auto_msg:
