@@ -200,6 +200,17 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             '내보내기': 'export',
             'export': 'export',
             
+            # === 패시브/적응 시스템 (신규 추가) ===
+            '패시브': 'passive',
+            'passive': 'passive',
+            '특성': 'passive',
+            '적응': 'adaptation',
+            'adaptation': 'adaptation',
+            '일상화': 'adaptation',
+            '경험': 'experience',
+            'experience': 'experience',
+            '진행도': 'experience',
+            
             # === NPC 정보 (신규 추가) ===
             'npc': 'npc',
             'npc_info': 'npc',
@@ -287,6 +298,21 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
         
         return {'type': 'command', 'command': command, 'content': args}
     
-    # 2. 일반 채팅
+    # 2. OOC 감지 (괄호로 시작하는 경우)
+    ooc_patterns = [
+        (r'^\(OOC[:\s]*(.*)\)$', True),      # (OOC: 내용)
+        (r'^\(ooc[:\s]*(.*)\)$', True),      # (ooc: 내용)  
+        (r'^\(\((.+)\)\)$', True),            # ((내용))
+        (r'^OOC[:\s]+(.+)$', False),          # OOC: 내용
+        (r'^ooc[:\s]+(.+)$', False),          # ooc: 내용
+    ]
+    
+    for pattern, _ in ooc_patterns:
+        match = re.match(pattern, clean_content, re.IGNORECASE | re.DOTALL)
+        if match:
+            ooc_content = match.group(1).strip()
+            return {'type': 'ooc', 'content': ooc_content}
+    
+    # 3. 일반 채팅
     style = analyze_style(raw_content, clean_content)
     return {'type': 'chat', 'style': style, 'content': clean_content}

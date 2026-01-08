@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lorekeeper TRPG Bot - Session Manager Module
 세션 초기화, 준비, 시작 등 세션 생명주기를 관리합니다.
 """

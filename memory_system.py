@@ -42,7 +42,7 @@ import json
 import asyncio
 import logging
 import re
-from typing import Optional, Dict, Any, List, Callable, TypeVar
+from typing import Optional, Dict, Any, List, Callable, TypeVar, Tuple
 from google.genai import types
 
 # =========================================================
@@ -788,7 +788,8 @@ async def analyze_context_nvc(
     history_text: str,
     lore: str,
     rules: str,
-    active_quests_text: str
+    active_quests_text: str,
+    player_context: str = ""
 ) -> Dict[str, Any]:
     """
     [THEORIA LEFT HEMISPHERE]
@@ -801,6 +802,7 @@ async def analyze_context_nvc(
         lore: 로어 텍스트
         rules: 게임 규칙
         active_quests_text: 활성 퀘스트 목록
+        player_context: 플레이어 상태 (보유 패시브 등)
     
     Returns:
         분석 결과 딕셔너리
@@ -835,11 +837,46 @@ async def analyze_context_nvc(
         "If impossible, state: **'Action Failed: Physics Violation'**.\n"
         "2. **Knowledge Firewall:** Distinguish Player Knowledge vs Character Knowledge.\n"
         "3. **Causal Integrity:** Verify causes existed BEFORE effects.\n"
-        "4. **Auto-XP Calculation:**\n"
-        "   - **Minor (10-30):** Skill check, smart move.\n"
-        "   - **Major (50-100):** Defeated enemy, solved puzzle, survived crisis.\n"
-        "   - **Critical (200+):** Boss kill, Quest complete.\n"
-        "   - *Condition:* Award ONLY for observable Success/Victory.\n\n"
+        "4. **Experience Recognition:** Note significant achievements, repeated experiences, and growth moments.\n\n"
+
+        "### SYSTEM ACTION RULES (자동 퀘스트/메모/NPC 관리)\n"
+        "SystemAction triggers automatically based on narrative events.\n\n"
+        
+        "**Quest Actions:**\n"
+        "- `{\"tool\": \"Quest\", \"type\": \"Add\", \"content\": \"퀘스트 내용\"}` — When NPC gives mission, player discovers objective\n"
+        "- `{\"tool\": \"Quest\", \"type\": \"Complete\", \"content\": \"기존 퀘스트의 일부 텍스트\"}` — When objective achieved, mission accomplished\n\n"
+        
+        "**Memo Actions:**\n"
+        "- `{\"tool\": \"Memo\", \"type\": \"Add\", \"content\": \"메모 내용\"}` — Important info: clues, NPC names, codes, locations, items acquired\n"
+        "- `{\"tool\": \"Memo\", \"type\": \"Archive\", \"content\": \"기존 메모의 일부 텍스트\"}` — When memo becomes obsolete (item used, info no longer relevant)\n\n"
+        
+        "**NPC Actions:**\n"
+        "- `{\"tool\": \"NPC\", \"type\": \"Add\", \"content\": \"이름: 설명\"}` — When new named NPC introduced\n\n"
+        
+        "**Examples:**\n"
+        "- Player receives letter with mission → Quest Add\n"
+        "- Player defeats boss mentioned in quest → Quest Complete\n"
+        "- Player finds password \"1234\" → Memo Add\n"
+        "- Player uses the password successfully → Memo Archive\n"
+        "- Player meets \"철수\" the blacksmith → NPC Add\n\n"
+        
+        "**IMPORTANT:** Return `null` if no action needed. Don't force actions.\n\n"
+
+        "### NPC INTERACTION SYSTEM\n"
+        "Analyze NPCs present in the scene and their attitudes toward players.\n\n"
+        
+        "**NPCAttitudes:** For each NPC interacting with players, determine attitude based on context:\n"
+        "- `hostile`: Aggressive, threatening, may lie or attack\n"
+        "- `unfriendly`: Cold, short answers, uncooperative\n"
+        "- `neutral`: Polite, businesslike, will trade\n"
+        "- `friendly`: Warm, helpful, shares information\n"
+        "- `devoted`: Loyal, shares secrets, willing to sacrifice\n\n"
+        
+        "**NPCInteraction:** When 2+ NPCs are present, suggest ambient dialogue between them:\n"
+        "- Tavern scene: NPCs gossiping, arguing, flirting\n"
+        "- Market: Merchants competing, customers complaining\n"
+        "- Combat aftermath: NPCs reacting to events\n"
+        "- Set to `null` if no NPC interaction is appropriate.\n\n"
 
         "### OUTPUT FORMAT (JSON ONLY)\n"
         "{\n"
@@ -854,27 +891,89 @@ async def analyze_context_nvc(
         '    "offscreen_npcs": ["NPC doing X elsewhere"],\n'
         '    "suggested_focus": "What the Right Hemisphere should emphasize"\n'
         '  },\n'
+        '  "NPCAttitudes": {\n'
+        '    "NPC이름": {"attitude": "hostile/unfriendly/neutral/friendly/devoted", "reason": "why"},\n'
+        '    "...": {...}\n'
+        '  },\n'
+        '  "NPCInteraction": {\n'
+        '    "participants": ["NPC1", "NPC2"],\n'
+        '    "type": "gossip/argument/flirt/business/reaction",\n'
+        '    "topic": "What they might discuss",\n'
+        '    "mood": "tense/casual/heated/secretive"\n'
+        '  } OR null,\n'
+        '  "AbnormalElements": ["드래곤", "마법", "고백"] OR [],\n'
+        '  "ExperienceCounters": {"독중독": 1, "백병전": 1} OR {},\n'
         '  "Need": "Logical next step for Right Hemisphere",\n'
-        '  "SystemAction": { "tool": "Quest/Memo/NPC/XP", "type": "...", "content": "..." } OR null\n'
+        '  "SystemAction": { "tool": "Quest/Memo/NPC", "type": "Add/Complete/Archive", "content": "..." } OR null\n'
         "}\n"
+        "\n"
+        "### ABNORMAL ELEMENTS & EXPERIENCE DETECTION\n"
+        "**AbnormalElements:** List any supernatural, unusual, or extraordinary elements in the scene.\n"
+        "Examples: 드래곤, 마법, 귀신, 상태창, 이세계, 몬스터, 초능력, 고백, 결투, 납치\n\n"
+        "**ExperienceCounters:** Detect significant experiences that contribute to character growth.\n"
+        "Use descriptive names based on what actually happened:\n"
+        "- Physical trials: 독중독, 화상, 동상, 낙하, 기절, 굶주림 등\n"
+        "- Combat experiences: 백병전, 암살시도, 포위당함 등\n"
+        "- Social/emotional: 배신당함, 거절당함, 협박당함, 죽을고비 등\n"
+        "- Supernatural: 마법피격, 드래곤조우, 귀신목격, 차원이동 등\n"
+        "Only count if it ACTUALLY HAPPENED to the player character.\n"
+        "\n"
+        "### PASSIVE SUGGESTION SYSTEM (AI-DRIVEN)\n"
+        "Analyze the player's cumulative experiences and suggest a NEW passive/title if warranted.\n\n"
+        
+        "**When to suggest a passive:**\n"
+        "- Repeated similar experiences (5+ times): 독에 자주 중독 → [독 내성]\n"
+        "- Significant relationship milestone: 엘프와 10+ 우호 상호작용 → [엘프의 친구]\n"
+        "- Survival of extreme situation: 죽을 고비 3회 → [구사일생]\n"
+        "- Unique achievement: 드래곤 처치 → [용 사냥꾼]\n"
+        "- Behavioral pattern: 항상 협상 선택 → [외교관의 혀]\n"
+        "- World-specific adaptation: 던전 50층 돌파 → [심연의 주민]\n\n"
+        
+        "**Passive structure:**\n"
+        "- name: Creative Korean title (e.g., '엘프의 친구', '불굴의 정신')\n"
+        "- trigger: What earned this (e.g., '엘프와 우호적 상호작용 10회')\n"
+        "- effect: Concrete in-world effect (e.g., '엘프에게 호감도 보너스, 엘프어 기초 이해')\n"
+        "- category: 생존/전투/사회/초자연/지식/기타\n\n"
+        
+        "**Rules:**\n"
+        "- Only suggest if TRULY earned through gameplay, not arbitrary\n"
+        "- Be creative but grounded in what actually happened\n"
+        "- Don't repeat passives player already has (check context)\n"
+        "- Suggest at most 1 passive per analysis\n"
+        "- Set to null if no passive is warranted\n\n"
+        
+        '  "PassiveSuggestion": {\n'
+        '    "name": "패시브/칭호 이름",\n'
+        '    "trigger": "획득 조건 설명",\n'
+        '    "effect": "구체적 효과",\n'
+        '    "category": "카테고리",\n'
+        '    "reasoning": "왜 이 패시브를 제안하는지 간단 설명"\n'
+        '  } OR null,\n'
     )
+
+    # player_context가 있으면 추가 (중복 패시브 방지용)
+    player_info = ""
+    if player_context:
+        player_info = f"### [PLAYER STATUS]\n{player_context}\n"
 
     user_prompt = (
         f"### [RULES]\n{rules}\n"
         f"### [QUESTS]\n{active_quests_text}\n"
+        f"{player_info}"
         f"### [HISTORY]\n{history_text}\n"
-        "Analyze the current state. Include temporal orientation for narrative continuity."
+        "Analyze the current state. Include temporal orientation for narrative continuity.\n"
+        "Consider if player deserves a new passive based on their cumulative experiences."
     )
     
     contents = [
         types.Content(role="user", parts=[types.Part(text=user_prompt)])
     ]
     
-    # 좌뇌 분석은 구조화된 출력이므로 minimal thinking으로 충분
+    # 패시브 판단을 위해 thinking_level을 low로 상향
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        temperature=0.1,
-        thinking_level="minimal"  # 비용 절약: 분석은 깊은 추론 불필요
+        temperature=0.2,  # 약간의 창의성 허용
+        thinking_level="low"  # 패시브 판단을 위해 상향
     )
     
     result = await api_call_with_retry(
@@ -1382,3 +1481,518 @@ async def extract_world_constraints(
             return parsed
     
     return None
+
+
+# =========================================================
+# OOC 명령 처리 및 AI 메모리 갱신
+# =========================================================
+
+def detect_ooc_command(text: str) -> Optional[Dict[str, str]]:
+    """
+    텍스트에서 OOC 명령을 감지합니다.
+    
+    지원 형식:
+    - (OOC: 내용)
+    - [OOC: 내용]
+    - ((내용))
+    - OOC: 내용
+    
+    Returns:
+        {"type": "ooc", "content": "명령 내용"} 또는 None
+    """
+    import re
+    
+    patterns = [
+        r'\(OOC[:\s]+(.+?)\)',      # (OOC: 내용)
+        r'\[OOC[:\s]+(.+?)\]',      # [OOC: 내용]
+        r'\(\((.+?)\)\)',            # ((내용))
+        r'^OOC[:\s]+(.+)$',          # OOC: 내용 (줄 시작)
+        r'\(메타[:\s]+(.+?)\)',      # (메타: 내용)
+        r'\(시스템[:\s]+(.+?)\)',    # (시스템: 내용)
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return {"type": "ooc", "content": match.group(1).strip()}
+    
+    return None
+
+
+async def process_ooc_memory_update(
+    client,
+    model_id: str,
+    ooc_content: str,
+    current_memory: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    OOC 명령을 해석하여 AI 메모리 업데이트 내용을 생성합니다.
+    
+    Args:
+        client: Gemini 클라이언트
+        model_id: 모델 ID
+        ooc_content: OOC 명령 내용
+        current_memory: 현재 AI 메모리 상태
+    
+    Returns:
+        업데이트할 필드들 딕셔너리 또는 None
+    """
+    if not client:
+        return None
+    
+    system_instruction = (
+        "You are an AI Memory Manager for a TRPG system.\n"
+        "The user has given an OOC (Out of Character) instruction to modify their character's memory.\n\n"
+        
+        "### CURRENT MEMORY STRUCTURE\n"
+        "- appearance: 외형 설명\n"
+        "- personality: 성격\n"
+        "- background: 배경 스토리\n"
+        "- relationships: {NPC이름: 관계설명}\n"
+        "- passives: [패시브/칭호 이름들]\n"
+        "- known_info: [알고 있는 정보들]\n"
+        "- foreshadowing: [미해결 복선들]\n"
+        "- normalization: {비일상요소: 적응상태}\n"
+        "- notes: 자유 메모\n\n"
+        
+        "### YOUR TASK\n"
+        "Parse the OOC instruction and determine what memory fields to update.\n"
+        "Only return fields that need to be changed.\n\n"
+        
+        "### EXAMPLES\n"
+        '- "리엘이랑 사이 안 좋아진 걸로" → {"relationships": {"리엘": "관계 악화, 서먹함"}}\n'
+        '- "마법에 익숙해진 걸로 해줘" → {"normalization": {"마법": "이제 익숙함"}}\n'
+        '- "봉인된 편지 복선으로 기억해둬" → {"foreshadowing": ["봉인된 편지의 비밀"]}\n'
+        '- "외형에 흉터 추가해줘" → {"appearance": "...기존 외형 + 왼쪽 뺨에 흉터"}\n'
+        '- "도적 길드 연락처 알게 됐어" → {"known_info": ["도적 길드 연락처"]}\n\n'
+        
+        "### OUTPUT FORMAT (JSON ONLY)\n"
+        "{\n"
+        '  "updates": { field: new_value, ... },\n'
+        '  "message": "변경 사항 요약 (한국어)"\n'
+        "}\n"
+        "If the instruction is unclear or invalid, return:\n"
+        '{"updates": null, "message": "이해하지 못했습니다. 다시 말씀해주세요."}'
+    )
+    
+    user_prompt = (
+        f"### CURRENT MEMORY\n{json.dumps(current_memory, ensure_ascii=False, indent=2)}\n\n"
+        f"### OOC INSTRUCTION\n{ooc_content}\n\n"
+        "Parse this instruction and return the memory updates."
+    )
+    
+    contents = [
+        types.Content(role="user", parts=[types.Part(text=user_prompt)])
+    ]
+    
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        temperature=0.1
+    )
+    
+    result = await api_call_with_retry(
+        client, model_id, contents, config,
+        operation_name="OOC Memory Update"
+    )
+    
+    if result:
+        parsed = safe_parse_json(result)
+        if parsed:
+            return parsed
+    
+    return None
+
+
+async def auto_update_ai_memory(
+    client,
+    model_id: str,
+    history_text: str,
+    current_memory: Dict[str, Any],
+    nvc_result: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    게임 진행에 따라 AI 메모리를 자동으로 갱신합니다.
+    
+    매 턴 호출되어 서사에서 중요한 변화를 감지하고 메모리에 반영합니다.
+    
+    Args:
+        client: Gemini 클라이언트
+        model_id: 모델 ID
+        history_text: 최근 대화 히스토리
+        current_memory: 현재 AI 메모리
+        nvc_result: 좌뇌 분석 결과
+    
+    Returns:
+        업데이트할 필드들 딕셔너리 또는 None
+    """
+    if not client:
+        return None
+    
+    system_instruction = (
+        "You are monitoring a TRPG session to update the player's AI memory.\n"
+        "Based on recent events, determine if any memory fields need updating.\n\n"
+        
+        "### WATCH FOR\n"
+        "1. **Relationship changes:** New NPC met, relationship improved/worsened\n"
+        "2. **New information:** Secrets discovered, clues found\n"
+        "3. **Passives/Titles earned:** Through repeated actions or achievements\n"
+        "4. **Abnormal normalization:** Getting used to supernatural things\n"
+        "5. **Foreshadowing:** Important hints that should be tracked\n\n"
+        
+        "### RULES\n"
+        "- Only update if something ACTUALLY changed\n"
+        "- Be conservative - don't update on minor events\n"
+        "- Passives require significant repeated experience\n"
+        "- Keep descriptions concise\n\n"
+        
+        "### OUTPUT FORMAT (JSON ONLY)\n"
+        "{\n"
+        '  "should_update": true/false,\n'
+        '  "updates": { field: new_value } OR null,\n'
+        '  "reason": "Why updating (or why not)"\n'
+        "}"
+    )
+    
+    user_prompt = (
+        f"### CURRENT MEMORY\n{json.dumps(current_memory, ensure_ascii=False)}\n\n"
+        f"### LEFT BRAIN ANALYSIS\n"
+        f"Location: {nvc_result.get('CurrentLocation', 'Unknown')}\n"
+        f"Observation: {nvc_result.get('Observation', 'N/A')}\n"
+        f"Abnormal Elements: {nvc_result.get('AbnormalElements', [])}\n\n"
+        f"### RECENT HISTORY\n{history_text[-2000:]}\n\n"  # 최근 2000자만
+        "Determine if memory should be updated."
+    )
+    
+    contents = [
+        types.Content(role="user", parts=[types.Part(text=user_prompt)])
+    ]
+    
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        temperature=0.1,
+        thinking_level="minimal"  # 비용 절약
+    )
+    
+    result = await api_call_with_retry(
+        client, model_id, contents, config,
+        operation_name="Auto Memory Update"
+    )
+    
+    if result:
+        parsed = safe_parse_json(result)
+        if parsed and parsed.get("should_update") and parsed.get("updates"):
+            return parsed
+    
+    return None
+
+
+# =========================================================
+# OOC 자연어 메모리 수정 (유저 요청)
+# =========================================================
+
+async def process_ooc_memory_edit(
+    client,
+    model_id: str,
+    user_request: str,
+    current_ai_memory: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    유저의 OOC 자연어 요청을 파싱하여 AI 메모리 수정 명령으로 변환합니다.
+    
+    Args:
+        client: Gemini 클라이언트
+        model_id: 모델 ID
+        user_request: 유저의 OOC 요청 (예: "리엘이랑 사이 안 좋아진 걸로 해줘")
+        current_ai_memory: 현재 AI 메모리 상태
+    
+    Returns:
+        수정 명령 딕셔너리 또는 None
+    """
+    system_instruction = (
+        "[AI Memory Editor]\n"
+        "Parse the user's natural language request and convert to memory edit commands.\n\n"
+        
+        "### EDITABLE FIELDS\n"
+        "- appearance: 외모 설명\n"
+        "- personality: 성격\n"
+        "- background: 배경 스토리\n"
+        "- relationships: {NPC이름: 관계설명} 딕셔너리\n"
+        "- passives: [패시브/칭호 이름] 리스트\n"
+        "- known_info: [알고 있는 정보] 리스트\n"
+        "- foreshadowing: [복선/떡밥] 리스트\n"
+        "- normalization: {비일상요소: 적응상태} 딕셔너리\n"
+        "- notes: 자유 메모\n\n"
+        
+        "### OPERATIONS\n"
+        "- set: 필드 값을 완전히 교체\n"
+        "- add: 리스트/딕셔너리에 항목 추가\n"
+        "- remove: 리스트/딕셔너리에서 항목 제거\n"
+        "- update: 딕셔너리의 특정 키만 수정\n\n"
+        
+        "### OUTPUT FORMAT (JSON)\n"
+        "{\n"
+        '  "understood": true/false,\n'
+        '  "interpretation": "유저 요청 해석 (한국어)",\n'
+        '  "edits": [\n'
+        '    {"field": "relationships", "operation": "update", "key": "리엘", "value": "사이가 멀어짐"},\n'
+        '    {"field": "passives", "operation": "add", "value": "배신자의 낙인"},\n'
+        '    {"field": "known_info", "operation": "remove", "value": "비밀 통로 위치"}\n'
+        '  ],\n'
+        '  "confirmation_message": "수정 완료 메시지 (한국어)"\n'
+        "}\n"
+    )
+    
+    current_mem_str = json.dumps(current_ai_memory, ensure_ascii=False, indent=2)
+    
+    user_prompt = (
+        f"### CURRENT AI MEMORY\n{current_mem_str}\n\n"
+        f"### USER REQUEST\n{user_request}\n\n"
+        "Parse this request and generate edit commands."
+    )
+    
+    contents = [
+        types.Content(role="user", parts=[types.Part(text=user_prompt)])
+    ]
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        temperature=0.1
+    )
+    
+    result = await api_call_with_retry(
+        client, model_id, contents, config,
+        operation_name="OOC Memory Edit"
+    )
+    
+    if result:
+        parsed = safe_parse_json(result)
+        if parsed and parsed.get("understood"):
+            return parsed
+    
+    return None
+
+
+def apply_memory_edits(ai_memory: Dict[str, Any], edits: List[Dict]) -> Dict[str, Any]:
+    """
+    파싱된 수정 명령을 AI 메모리에 적용합니다.
+    
+    Args:
+        ai_memory: 현재 AI 메모리
+        edits: 수정 명령 리스트
+    
+    Returns:
+        수정된 AI 메모리
+    """
+    import copy
+    updated = copy.deepcopy(ai_memory)
+    
+    for edit in edits:
+        field = edit.get("field")
+        operation = edit.get("operation")
+        value = edit.get("value")
+        key = edit.get("key")
+        
+        if field not in updated:
+            continue
+        
+        current_value = updated[field]
+        
+        if operation == "set":
+            updated[field] = value
+            
+        elif operation == "add":
+            if isinstance(current_value, list):
+                if value not in current_value:
+                    current_value.append(value)
+            elif isinstance(current_value, dict) and key:
+                current_value[key] = value
+                
+        elif operation == "remove":
+            if isinstance(current_value, list) and value in current_value:
+                current_value.remove(value)
+            elif isinstance(current_value, dict) and key and key in current_value:
+                del current_value[key]
+                
+        elif operation == "update":
+            if isinstance(current_value, dict) and key:
+                current_value[key] = value
+    
+    return updated
+
+
+# =========================================================
+# 세션 레벨 AI 메모리 자동 갱신
+# =========================================================
+
+async def auto_update_session_memory(
+    client,
+    model_id: str,
+    history_text: str,
+    current_session_memory: Dict[str, Any],
+    nvc_result: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    세션 레벨 AI 메모리를 자동으로 갱신합니다.
+    
+    Args:
+        client: Gemini 클라이언트
+        model_id: 모델 ID
+        history_text: 최근 대화 히스토리
+        current_session_memory: 현재 세션 AI 메모리
+        nvc_result: 좌뇌 분석 결과
+    
+    Returns:
+        업데이트할 필드들 딕셔너리 또는 None
+    """
+    if not client:
+        return None
+    
+    system_instruction = (
+        "You monitor a TRPG session to update the SESSION-LEVEL AI memory.\n"
+        "This is for tracking world state, story arcs, and NPC information.\n\n"
+        
+        "### MEMORY FIELDS\n"
+        "- world_summary: Overall world situation (1-2 sentences)\n"
+        "- current_arc: Current story arc or main quest\n"
+        "- active_threads: Ongoing plot threads (list)\n"
+        "- resolved_threads: Completed plot threads (list)\n"
+        "- key_events: Important events with day number (list)\n"
+        "- foreshadowing: Unresolved plot hooks (list)\n"
+        "- world_changes: Changes to the world state (list)\n"
+        "- npc_summaries: {NPC name: brief description}\n"
+        "- party_dynamics: Party relationship summary\n\n"
+        
+        "### RULES\n"
+        "- Only update on SIGNIFICANT changes\n"
+        "- Move completed threads from active to resolved\n"
+        "- Track new NPCs encountered\n"
+        "- Note world state changes (new dangers, political shifts)\n"
+        "- Keep summaries brief and useful\n\n"
+        
+        "### OUTPUT FORMAT (JSON ONLY)\n"
+        "{\n"
+        '  "should_update": true/false,\n'
+        '  "updates": {\n'
+        '    "field_name": new_value,\n'
+        '    ...\n'
+        '  } OR null,\n'
+        '  "reason": "Brief explanation"\n'
+        "}"
+    )
+    
+    user_prompt = (
+        f"### CURRENT SESSION MEMORY\n{json.dumps(current_session_memory, ensure_ascii=False)}\n\n"
+        f"### LEFT BRAIN ANALYSIS\n"
+        f"Location: {nvc_result.get('CurrentLocation', 'Unknown')}\n"
+        f"Risk: {nvc_result.get('LocationRisk', 'Unknown')}\n"
+        f"Observation: {nvc_result.get('Observation', 'N/A')}\n"
+        f"Threads: {nvc_result.get('TemporalOrientation', {}).get('active_threads', [])}\n\n"
+        f"### RECENT HISTORY\n{history_text[-2000:]}\n\n"
+        "Determine if session memory should be updated."
+    )
+    
+    contents = [
+        types.Content(role="user", parts=[types.Part(text=user_prompt)])
+    ]
+    
+    config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
+        response_mime_type="application/json",
+        temperature=0.1,
+        thinking_level="minimal"
+    )
+    
+    result = await api_call_with_retry(
+        client, model_id, contents, config,
+        operation_name="Session Memory Update"
+    )
+    
+    if result:
+        parsed = safe_parse_json(result)
+        if parsed and parsed.get("should_update") and parsed.get("updates"):
+            return parsed
+    
+    return None
+
+
+async def process_full_memory_update(
+    client,
+    model_id: str,
+    channel_id: str,
+    user_id: str,
+    history_text: str,
+    nvc_result: Dict[str, Any],
+    domain_manager_module
+) -> List[str]:
+    """
+    플레이어 메모리 + 세션 메모리를 한 번에 갱신합니다.
+    
+    Args:
+        client: Gemini 클라이언트
+        model_id: 모델 ID
+        channel_id: 채널 ID
+        user_id: 유저 ID
+        history_text: 최근 대화 히스토리
+        nvc_result: 좌뇌 분석 결과
+        domain_manager_module: domain_manager 모듈 참조
+    
+    Returns:
+        갱신 메시지 리스트
+    """
+    messages = []
+    
+    # 1. 플레이어 메모리 갱신
+    current_player_memory = domain_manager_module.get_ai_memory(channel_id, user_id) or {}
+    
+    player_update = await auto_update_ai_memory(
+        client, model_id, history_text, current_player_memory, nvc_result
+    )
+    
+    if player_update and player_update.get("updates"):
+        updates = player_update["updates"]
+        domain_manager_module.update_ai_memory(channel_id, user_id, updates)
+        
+        # 패시브 획득 알림
+        if "passives" in updates:
+            new_passives = updates["passives"]
+            if isinstance(new_passives, list):
+                for p in new_passives:
+                    if p not in current_player_memory.get("passives", []):
+                        messages.append(f"🏆 **패시브 획득:** {p}")
+        
+        # 관계 변화 알림
+        if "relationships" in updates:
+            for npc, status in updates["relationships"].items():
+                old_status = current_player_memory.get("relationships", {}).get(npc, "")
+                if status != old_status:
+                    messages.append(f"💞 **관계 변화:** {npc} - {status}")
+    
+    # 2. 세션 메모리 갱신
+    current_session_memory = domain_manager_module.get_session_ai_memory(channel_id) or {}
+    
+    session_update = await auto_update_session_memory(
+        client, model_id, history_text, current_session_memory, nvc_result
+    )
+    
+    if session_update and session_update.get("updates"):
+        domain_manager_module.update_session_ai_memory(channel_id, session_update["updates"])
+        
+        # 복선 추가 알림
+        if "foreshadowing" in session_update["updates"]:
+            new_fs = session_update["updates"]["foreshadowing"]
+            if isinstance(new_fs, list):
+                for fs in new_fs:
+                    if fs not in current_session_memory.get("foreshadowing", []):
+                        messages.append(f"🔮 **복선 감지:** {fs}")
+        
+        # 스레드 해결 알림
+        if "resolved_threads" in session_update["updates"]:
+            new_resolved = session_update["updates"]["resolved_threads"]
+            if isinstance(new_resolved, list):
+                for thread in new_resolved:
+                    if thread not in current_session_memory.get("resolved_threads", []):
+                        messages.append(f"✅ **스토리 진행:** {thread} 해결!")
+    
+    return messages

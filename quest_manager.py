@@ -1,4 +1,4 @@
-"""
+﻿"""
 Lorekeeper TRPG Bot - Quest Manager Module
 퀘스트, 메모, 연대기 관리를 담당합니다.
 """
