@@ -139,8 +139,8 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             '진행': 'next',
             '건너뛰기': 'next',
             'next': 'next',
-            '턴': 'turn',
-            'turn': 'turn',
+            '턴': 'next',
+            'turn': 'next',
             '모드': 'mode',
             'mode': 'mode',
             
@@ -161,14 +161,12 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             '컴백': 'back',
             'back': 'back',
             
-            # === 시스템 및 성장 ===
+            # === 시스템 설정 ===
             '시스템': 'system',
             '설정': 'system',
             'system': 'system',
-            '경험치': 'xp',
-            'xp': 'xp',
             
-            # === 치트/디버그 모드 (신규 추가) ===
+            # === 치트/GM 모드 ===
             '치트': 'cheat',
             'cheat': 'cheat',
             '디버그': 'cheat',
@@ -181,17 +179,9 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             '룰': 'rule',
             'rule': 'rule',
             
-            # === 퀘스트 및 로어 박제 시스템 ===
+            # === 상태 조회 ===
             '상태': 'status',
             'status': 'status',
-            '퀘스트': 'quest',
-            'quest': 'quest',
-            '메모': 'memo',
-            'memo': 'memo',
-            '완료': 'complete',
-            'complete': 'complete',
-            '보관': 'archive',
-            'archive': 'archive',
             '연대기': 'lores',
             'lores': 'lores',
             
@@ -200,51 +190,12 @@ def parse_input(content: str) -> Optional[Dict[str, Any]]:
             '내보내기': 'export',
             'export': 'export',
             
-            # === 패시브/적응 시스템 (신규 추가) ===
-            '패시브': 'passive',
-            'passive': 'passive',
-            '특성': 'passive',
-            '적응': 'adaptation',
-            'adaptation': 'adaptation',
-            '일상화': 'adaptation',
-            '경험': 'experience',
-            'experience': 'experience',
-            '진행도': 'experience',
-            
-            # === NPC 정보 (신규 추가) ===
+            # === NPC 정보 ===
             'npc': 'npc',
-            'npc_info': 'npc',
             'npc정보': 'npc',
             '엔피씨': 'npc',
             
-            # === AI 분석 도구 (신규 추가) ===
-            '분석': 'analyze',
-            'analyze': 'analyze',
-            'ooc': 'ooc',
-            '메타': 'ooc',
-            '일관성': 'consistency',
-            'consistency': 'consistency',
-            '세계규칙': 'worldrules',
-            'worldrules': 'worldrules',
-            '예측': 'forecast',
-            'forecast': 'forecast',
-            '둠': 'doom',
-            'doom': 'doom',
-            
-            # === Thinking Level 설정 ===
-            '사고': 'thinking',
-            'thinking': 'thinking',
-            '추론': 'thinking',
-            
-            # === 상태이상 ===
-            '버프': 'buff',
-            'buff': 'buff',
-            '디버프': 'debuff',
-            'debuff': 'debuff',
-            '상태이상': 'effects',
-            'effects': 'effects',
-            
-            # === 주사위 (통합) ===
+            # === 주사위 ===
             '주사위': 'roll',
             '굴림': 'roll',
             'r': 'roll',

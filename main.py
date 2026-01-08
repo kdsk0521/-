@@ -242,9 +242,14 @@ async def handle_cheat_command(message, channel_id: str, args: List[str], client
     # === 버프/디버프 치트 ===
     elif category in ['버프', 'buff']:
         if len(args) < 2:
-            buffs = [name for name, data in simulation_manager.STATUS_EFFECTS.items() 
-                     if data.get("type") == "buff"]
-            return f"🛠️ **사용 가능한 버프:**\n{', '.join(buffs)}\n\n사용법: `!치트 버프 [이름]` 또는 `!치트 버프 제거 [이름]`"
+            return (
+                "🛠️ **버프 추가/제거**\n"
+                "AI가 서사에 맞게 자유롭게 상태를 판단합니다.\n\n"
+                "사용법:\n"
+                "• `!치트 버프 [이름]` - 버프 추가\n"
+                "• `!치트 버프 제거 [이름]` - 버프 제거\n\n"
+                "예시: 집중, 영감, 보호, 축복, 가속, 행운 등"
+            )
         
         action = args[1]
         uid = str(message.author.id)
@@ -258,19 +263,24 @@ async def handle_cheat_command(message, channel_id: str, args: List[str], client
             if len(args) < 3:
                 return "❌ 제거할 버프 이름을 입력하세요."
             effect_name = args[2]
-            p_data, msg = simulation_manager.update_status_effect(p_data, "remove", effect_name)
+            p_data, msg = simulation_manager.remove_status_effect(p_data, effect_name)
         else:
             effect_name = action
-            p_data, msg = simulation_manager.update_status_effect(p_data, "add", effect_name)
+            p_data, msg = simulation_manager.add_status_effect(p_data, effect_name, "GM 부여")
         
         domain_manager.save_participant_data(channel_id, uid, p_data)
         return f"🛠️ {msg}"
     
     elif category in ['디버프', 'debuff']:
         if len(args) < 2:
-            debuffs = [name for name, data in simulation_manager.STATUS_EFFECTS.items() 
-                       if data.get("type") != "buff"]
-            return f"🛠️ **사용 가능한 디버프:**\n{', '.join(debuffs[:20])}...\n\n사용법: `!치트 디버프 [이름]` 또는 `!치트 디버프 제거 [이름]`"
+            return (
+                "🛠️ **디버프 추가/제거**\n"
+                "AI가 서사에 맞게 자유롭게 상태를 판단합니다.\n\n"
+                "사용법:\n"
+                "• `!치트 디버프 [이름]` - 디버프 추가\n"
+                "• `!치트 디버프 제거 [이름]` - 디버프 제거\n\n"
+                "예시: 부상, 중독, 공포, 피로, 출혈, 저주 등"
+            )
         
         action = args[1]
         uid = str(message.author.id)
@@ -284,10 +294,10 @@ async def handle_cheat_command(message, channel_id: str, args: List[str], client
             if len(args) < 3:
                 return "❌ 제거할 디버프 이름을 입력하세요."
             effect_name = args[2]
-            p_data, msg = simulation_manager.update_status_effect(p_data, "remove", effect_name)
+            p_data, msg = simulation_manager.remove_status_effect(p_data, effect_name)
         else:
             effect_name = action
-            p_data, msg = simulation_manager.update_status_effect(p_data, "add", effect_name)
+            p_data, msg = simulation_manager.add_status_effect(p_data, effect_name, "GM 부여")
         
         domain_manager.save_participant_data(channel_id, uid, p_data)
         return f"🛠️ {msg}"
@@ -382,13 +392,19 @@ async def handle_lore_command(message, channel_id: str, arg: str) -> None:
         await message.channel.send("📜 초기화됨")
         return
     
-    # 로어 저장
-    current_lore = domain_manager.get_lore(channel_id)
+    # 로어 저장 모드 확인
+    if full.startswith("추가 ") or full.startswith("append "):
+        # 추가 모드: 기존 로어에 덧붙임
+        add_text = full.split(maxsplit=1)[1] if len(full.split(maxsplit=1)) > 1 else ""
+        if add_text:
+            domain_manager.append_lore(channel_id, add_text)
+            await message.channel.send(f"📜 로어에 추가됨:\n```{add_text[:200]}{'...' if len(add_text) > 200 else ''}```")
+        else:
+            await message.channel.send("⚠️ 추가할 내용을 입력하세요. 예: `!로어 추가 [내용]`")
+        return
     
-    # 파일 업로드 시 또는 기존 로어가 기본값이면 리셋
-    if file_text or current_lore == domain_manager.DEFAULT_LORE:
-        domain_manager.reset_lore(channel_id)
-    
+    # 기본: 덮어쓰기 모드
+    domain_manager.reset_lore(channel_id)
     domain_manager.append_lore(channel_id, full)
     
     # 로어 크기 확인
@@ -598,23 +614,11 @@ async def handle_info_command(message, channel_id: str) -> None:
         if personality:
             header += f"\n💭 {personality}"
     
-    # === 상태이상 (버프/디버프 통합) ===
+    # === 상태이상 (단순 목록 표시) ===
     status_effects = p.get('status_effects', [])
     status_section = ""
     if status_effects:
-        buffs = []
-        debuffs = []
-        for effect_name in status_effects:
-            effect_info = simulation_manager.STATUS_EFFECTS.get(effect_name, {"type": "unknown"})
-            if effect_info.get("type") == "buff":
-                buffs.append(effect_name)
-            else:
-                debuffs.append(effect_name)
-        
-        if buffs:
-            status_section += f"✨ 버프: {', '.join(buffs)}\n"
-        if debuffs:
-            status_section += f"💀 디버프: {', '.join(debuffs)}\n"
+        status_section = f"📋 상태: {', '.join(status_effects)}\n"
     else:
         status_section = "✅ 상태: 정상\n"
     
@@ -1086,61 +1090,6 @@ async def on_message(message):
                 return
             
             # --- Thinking Level 설정 ---
-            if cmd == 'thinking':
-                arg = parsed.get('content', '').strip().lower()
-                
-                valid_modes = ['auto', 'minimal', 'low', 'medium', 'high']
-                
-                if not arg:
-                    # 현재 상태 표시
-                    current_mode = domain_manager.get_thinking_mode(channel_id)
-                    mode_desc = {
-                        'auto': '🤖 자동 (상황에 따라 조절)',
-                        'minimal': '⚡ 최소 (빠름, 저비용)',
-                        'low': '💭 낮음 (일반 대화)',
-                        'medium': '🧠 보통 (전투, NPC 대화)',
-                        'high': '🎓 높음 (추리, 복잡한 상황)'
-                    }
-                    
-                    # 길이 정보 표시
-                    length_info = ""
-                    for level in ['minimal', 'low', 'medium', 'high']:
-                        lengths = persona.get_length_requirements(level)
-                        length_info += f"• `{level}`: {lengths['min']}~{lengths['max']}자\n"
-                    
-                    await message.channel.send(
-                        f"🧠 **Thinking Level 설정**\n\n"
-                        f"현재: **{mode_desc.get(current_mode, current_mode)}**\n\n"
-                        f"**레벨별 응답 길이:**\n{length_info}\n"
-                        f"사용법: `!사고 [auto/minimal/low/medium/high]`\n"
-                        f"• `auto`: 상황 복잡도에 따라 자동 조절 (권장)\n"
-                        f"• `minimal`: 단순 행동에 적합, 비용 최소\n"
-                        f"• `low`: 일반 대화에 적합\n"
-                        f"• `medium`: 전투, NPC 상호작용\n"
-                        f"• `high`: 추리, 협상, 중요 결정"
-                    )
-                    return
-                
-                if arg in valid_modes:
-                    domain_manager.set_thinking_mode(channel_id, arg)
-                    mode_emoji = {'auto': '🤖', 'minimal': '⚡', 'low': '💭', 'medium': '🧠', 'high': '🎓'}
-                    
-                    # 변경된 모드의 길이 정보 표시
-                    if arg != 'auto':
-                        lengths = persona.get_length_requirements(arg)
-                        length_msg = f" (응답 길이: {lengths['min']}~{lengths['max']}자)"
-                    else:
-                        length_msg = " (상황에 따라 300~1200자)"
-                    
-                    await message.channel.send(
-                        f"{mode_emoji.get(arg, '🧠')} **Thinking Level 변경:** `{arg}`{length_msg}"
-                    )
-                else:
-                    await message.channel.send(
-                        f"⚠️ 올바른 모드를 입력하세요: {', '.join(valid_modes)}"
-                    )
-                return
-            
         # =========================================================
         # 주사위 처리
         # =========================================================
@@ -1382,32 +1331,14 @@ async def on_message(message):
             
             response = "⚠️ AI Error"
             if client_genai:
-                # Thinking Mode 확인 (auto 또는 수동 고정)
-                thinking_mode = domain_manager.get_thinking_mode(channel_id)
-                
-                if thinking_mode == "auto":
-                    # 자동: 상황에 따라 Thinking Level 결정
-                    thinking_context = {
-                        "risk_level": nvc_res.get("LocationRisk", "Low"),
-                        "doom": domain_manager.get_world_state(channel_id).get("doom", 0)
-                    }
-                    thinking_level, thinking_reason = persona.analyze_input_complexity(
-                        action_text, thinking_context
-                    )
-                else:
-                    # 수동: 고정된 Thinking Level 사용
-                    thinking_level = thinking_mode
-                    thinking_reason = "수동 설정"
-                
                 loading = await message.channel.send(
-                    f"⏳ **[Lorekeeper]** 집필 중... (🧠 {thinking_level})"
+                    f"⏳ **[Lorekeeper]** 집필 중..."
                 )
                 
-                # Thinking Level을 적용하여 세션 생성
+                # 세션 생성
                 session = persona.create_risu_style_session(
                     client_genai, MODEL_ID, lore_txt, rule_txt, 
-                    active_genres, custom_tone,
-                    thinking_level=thinking_level  # 동적 Thinking Level
+                    active_genres, custom_tone
                 )
                 
                 # 히스토리 추가
@@ -1417,21 +1348,16 @@ async def on_message(message):
                         types.Content(role=role, parts=[types.Part(text=h['content'])])
                     )
                 
-                # 응답 생성 (동적 길이 적용)
+                # 응답 생성
                 response = await persona.generate_response_with_retry(
-                    client_genai, session, full_prompt,
-                    thinking_level=thinking_level  # 길이 요구사항 전달
+                    client_genai, session, full_prompt
                 )
                 
                 await safe_delete_message(loading)
                 
-                # 디버그: Thinking Level 및 응답 길이 로깅
+                # 응답 길이 로깅
                 if response:
-                    logging.info(
-                        f"[Thinking] Level: {thinking_level}, "
-                        f"Reason: {thinking_reason}, "
-                        f"Length: {len(response)}자"
-                    )
+                    logging.info(f"[Response] Length: {len(response)}자")
             
             # 결과 전송
             if auto_msg:

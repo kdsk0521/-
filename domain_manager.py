@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lorekeeper TRPG Bot - Domain Manager Module
 세션 데이터, 로어, 룰북 등의 영구 저장을 담당합니다.
 """
@@ -16,11 +16,29 @@ MAX_DESC_LENGTH = 50  # 설명 요약 시 최대 길이
 
 DEFAULT_LORE = "[장르: 설정되지 않음]"
 DEFAULT_RULES = """
-[게임 규칙: 표준 TRPG 시스템]
-1. 판정: 모든 행동은 !r 1d20 (20면체 주사위)을 통해 결정됩니다.
-2. 난이도(DC): 보통 10 / 어려움 15 / 매우 어려움 20 / 불가능 25
-3. 전투: 주사위 값이 높을수록 더 효율적이고 치명적인 공격을 성공시킵니다.
-4. 성장: 캐릭터는 행동과 선택을 통해 경험치를 얻고 레벨업하며 스탯을 올립니다.
+[게임 규칙: 서사 중심 성장 시스템]
+
+## 판정
+- AI가 캐릭터의 패시브, 적응도, 상황을 고려해 자연스럽게 결과 판정
+- 주사위(!r)는 불확실성 연출용, 결과의 참고 자료로 활용
+- 숫자 스탯 없음 — 서사적 맥락이 판정 기준
+
+## 성장
+- 경험치/레벨 시스템 없음
+- 반복된 경험 → 패시브 획득 (예: 독에 여러 번 중독 → "독 내성")
+- 의미 있는 성취 → 칭호 획득 (예: 드래곤 처치 → "용 사냥꾼")
+- AI가 적절한 시점에 패시브/칭호 부여
+
+## 적응 (비일상 적응도)
+- 초자연적/비일상적 경험에 반복 노출 시 적응도 상승
+- 적응도에 따라 캐릭터 반응 변화 (공포 → 경계 → 익숙함)
+- 세계관에 따라 적응 대상 다름 (마법, 괴물, 이세계 등)
+
+## 주사위
+- `!r 1d20` — 20면체 주사위
+- `!r 2d6+3` — 6면체 2개 + 3
+- `!r 3d6k2` — 6면체 3개 중 높은 2개
+- 결과는 서사 연출의 참고, 절대적 기준 아님
 """
 
 # 디렉토리 경로
@@ -29,15 +47,6 @@ SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 LORE_DIR = os.path.join(DATA_DIR, "lores")
 LORE_SUMMARY_DIR = os.path.join(DATA_DIR, "lore_summaries")
 RULES_DIR = os.path.join(DATA_DIR, "rules")
-
-# 기본 참가자 스탯
-DEFAULT_STATS = {
-    "근력": 10,
-    "민첩": 10,
-    "지능": 10,
-    "매력": 10,
-    "스트레스": 0
-}
 
 # 기본 월드 스테이트 (누락 키 추가됨)
 DEFAULT_WORLD_STATE = {
@@ -165,8 +174,7 @@ def _get_default_session() -> Dict[str, Any]:
         "settings": {
             "response_mode": "auto",
             "session_locked": False,
-            "growth_system": "standard",
-            "thinking_mode": "auto"
+            "growth_system": "standard"
         },
         "active_genres": ["noir"],
         "custom_tone": None,
@@ -231,17 +239,7 @@ def _create_default_participant(display_name: str) -> Dict[str, Any]:
         "status": "active",
         
         # === 코드 관리 영역 (숫자, 정확해야 함) ===
-        "core_stats": {
-            "hp": 100,
-            "max_hp": 100,
-            "mp": 50,
-            "max_mp": 50,
-            "level": 1,
-            "xp": 0,
-            "next_xp": 100,
-            "gold": 0
-        },
-        "stats": DEFAULT_STATS.copy(),  # 근력, 민첩 등
+        # === 기본 정보 ===
         "inventory": {},  # {"검": 1, "포션": 3}
         "status_effects": [],  # ["중독", "출혈"]
         
@@ -258,13 +256,14 @@ def _create_default_participant(display_name: str) -> Dict[str, Any]:
             "notes": ""  # 자유 형식 메모
         },
         
-        # === 호환성 (기존 코드용, 점진적 제거 예정) ===
+        # === 호환성 (기존 코드용) ===
         "description": "",
         "relations": {},  # 숫자 기반 → ai_memory.relationships로 이전
         "summary_data": {},
         "abnormal_exposure": {},
         "passives": [],
-        "experience_counters": {}
+        "experience_counters": {},
+        "xp": 0  # 커스텀 모드용
     }
 
 
@@ -501,29 +500,6 @@ def set_growth_system(channel_id: str, mode: str) -> None:
     """성장 시스템을 설정합니다."""
     d = get_domain(channel_id)
     d["settings"]["growth_system"] = mode
-    save_domain(channel_id, d)
-
-
-def get_thinking_mode(channel_id: str) -> str:
-    """
-    Thinking 모드를 가져옵니다.
-    
-    Returns:
-        'auto': 자동 조절 (기본값)
-        'minimal'/'low'/'medium'/'high': 수동 고정
-    """
-    return get_domain(channel_id)["settings"].get("thinking_mode", "auto")
-
-
-def set_thinking_mode(channel_id: str, mode: str) -> None:
-    """
-    Thinking 모드를 설정합니다.
-    
-    Args:
-        mode: 'auto', 'minimal', 'low', 'medium', 'high' 중 하나
-    """
-    d = get_domain(channel_id)
-    d["settings"]["thinking_mode"] = mode
     save_domain(channel_id, d)
 
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 Lorekeeper TRPG Bot - Session Manager Module
 세션 초기화, 준비, 시작 등 세션 생명주기를 관리합니다.
 """
@@ -174,10 +174,14 @@ class SessionManager:
             msg += "❌ 로어 부족\n"
             ready = False
         
-        # 룰 확인
-        has_rules = rules and rules != domain_manager.DEFAULT_RULES
+        # 룰 확인 (기본 룰도 OK)
+        has_rules = rules and len(rules.strip()) > 0
+        is_custom = rules != domain_manager.DEFAULT_RULES
         if has_rules:
-            msg += "✅ 룰북 OK\n"
+            if is_custom:
+                msg += "✅ 룰북 OK (커스텀)\n"
+            else:
+                msg += "✅ 룰북 OK (기본 규칙)\n"
         else:
             msg += "❌ 룰북 부족\n"
             ready = False
@@ -188,7 +192,7 @@ class SessionManager:
             msg += "\n✨ **준비 완료!** `!가면` 설정 후 `!시작` 하세요."
         else:
             domain_manager.set_prepared(channel_id, False)
-            msg += "\n❗ **준비 실패** - 로어와 룰북을 먼저 설정해주세요."
+            msg += "\n❗ **준비 실패** - 로어를 먼저 설정해주세요."
         
         await message.channel.send(msg)
     

@@ -283,7 +283,7 @@ SUPPORTED_GENRES = [
 GENRE_KEYWORD_MAP = {
     "high_fantasy": [
         "dragon", "elf", "orc", "magic", "wizard", "spell", "kingdom", 
-        "mana", "legion", "드래곤", "엘프", "마법", "왕국"
+        "mana", "legion", "드래곤", "엘프", "마법", "왕국", "하이판타지", "판타지"
     ],
     "steampunk": [
         "steam", "gear", "brass", "industrial", "engine", "victorian", 
@@ -969,11 +969,9 @@ async def analyze_context_nvc(
         types.Content(role="user", parts=[types.Part(text=user_prompt)])
     ]
     
-    # 패시브 판단을 위해 thinking_level을 low로 상향
     config = types.GenerateContentConfig(
         response_mime_type="application/json",
-        temperature=0.2,  # 약간의 창의성 허용
-        thinking_level="low"  # 패시브 판단을 위해 상향
+        temperature=0.2  # 약간의 창의성 허용
     )
     
     result = await api_call_with_retry(
@@ -1097,6 +1095,7 @@ async def analyze_genre_from_lore(
         types.Content(role="user", parts=[types.Part(text=user_prompt)])
     ]
     config = types.GenerateContentConfig(
+        system_instruction=system_instruction,
         response_mime_type="application/json",
         temperature=0.3
     )
@@ -1671,8 +1670,7 @@ async def auto_update_ai_memory(
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
         response_mime_type="application/json",
-        temperature=0.1,
-        thinking_level="minimal"  # 비용 절약
+        temperature=0.1
     )
     
     result = await api_call_with_retry(
@@ -1900,8 +1898,7 @@ async def auto_update_session_memory(
     config = types.GenerateContentConfig(
         system_instruction=system_instruction,
         response_mime_type="application/json",
-        temperature=0.1,
-        thinking_level="minimal"
+        temperature=0.1
     )
     
     result = await api_call_with_retry(
