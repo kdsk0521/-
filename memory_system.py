@@ -904,6 +904,14 @@ async def analyze_context_nvc(
         '    "gold_change": +100 OR -50 OR null,\n'
         '    "status_add": ["중독", "피로"] OR null,\n'
         '    "status_remove": ["출혈"] OR null\n'
+        '  } OR null,\n'
+        '  "PlayerMemoryUpdate": {\n'
+        '    "relationships": {"NPC이름": "관계 설명"} OR null,\n'
+        '    "passives": ["새 패시브/칭호"] OR null,\n'
+        '    "known_info": ["새로 알게 된 정보"] OR null,\n'
+        '    "foreshadowing": ["복선/떡밥"] OR null,\n'
+        '    "normalization": {"비일상요소": "적응 단계"} OR null,\n'
+        '    "companions": ["동행자이름: 설명"] OR null\n'
         '  } OR null\n'
         "}\n"
         "\n"
@@ -2183,6 +2191,66 @@ def apply_ai_memory_updates(
             # 저장
             if updated:
                 domain_manager_module.save_participant_data(channel_id, user_id, p_data)
+    
+    # === 플레이어 메모리 업데이트 (좌뇌 분석 결과에서) ===
+    player_mem_update = nvc_result.get("PlayerMemoryUpdate", {})
+    if player_mem_update:
+        current_mem = domain_manager_module.get_ai_memory(channel_id, user_id)
+        mem_updated = False
+        
+        # relationships 업데이트
+        if player_mem_update.get("relationships"):
+            for name, desc in player_mem_update["relationships"].items():
+                if name and desc:
+                    current_mem.setdefault("relationships", {})[name] = desc
+                    messages.append(f"💞 **{name}**: {desc}")
+                    mem_updated = True
+        
+        # passives 추가
+        if player_mem_update.get("passives"):
+            for passive in player_mem_update["passives"]:
+                if passive and passive not in current_mem.get("passives", []):
+                    current_mem.setdefault("passives", []).append(passive)
+                    messages.append(f"🏆 **패시브 획득:** {passive}")
+                    mem_updated = True
+        
+        # known_info 추가
+        if player_mem_update.get("known_info"):
+            for info in player_mem_update["known_info"]:
+                if info and info not in current_mem.get("known_info", []):
+                    current_mem.setdefault("known_info", []).append(info)
+                    messages.append(f"💡 **새로운 정보:** {info}")
+                    mem_updated = True
+        
+        # foreshadowing 추가
+        if player_mem_update.get("foreshadowing"):
+            for fs in player_mem_update["foreshadowing"]:
+                if fs and fs not in current_mem.get("foreshadowing", []):
+                    current_mem.setdefault("foreshadowing", []).append(fs)
+                    messages.append(f"🔮 **복선:** {fs}")
+                    mem_updated = True
+        
+        # normalization 업데이트
+        if player_mem_update.get("normalization"):
+            for thing, status in player_mem_update["normalization"].items():
+                if thing and status:
+                    current_mem.setdefault("normalization", {})[thing] = status
+                    messages.append(f"🌓 **[{thing}]** {status}")
+                    mem_updated = True
+        
+        # companions 처리 (동행자/펫 - known_info에 저장)
+        if player_mem_update.get("companions"):
+            for companion in player_mem_update["companions"]:
+                if companion:
+                    companion_info = f"동행자: {companion}"
+                    if companion_info not in current_mem.get("known_info", []):
+                        current_mem.setdefault("known_info", []).append(companion_info)
+                        messages.append(f"🐾 **동행자:** {companion}")
+                        mem_updated = True
+        
+        # 저장
+        if mem_updated:
+            domain_manager_module.update_ai_memory(channel_id, user_id, current_mem)
     
     return messages
 

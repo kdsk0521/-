@@ -489,9 +489,63 @@ Based on all the context provided above:
 3. Maintain story continuity from FERMENTED/IMMEDIATE memory
 4. Apply all active constraints and genre modules
 5. Output in Korean (한국어)
+6. **CRITICAL:** Append system_update block if ANY changes occurred
 
 **Format:** Third-person narrative prose
 **Forbidden:** Player dialogue, thoughts, or decisions
+
+## SYSTEM UPDATE BLOCK (자동 정보 업데이트)
+**서사 응답 끝에 변경사항이 있을 때만 다음 블록을 추가하세요:**
+
+```system_update
+{
+  "inventory_add": {"아이템이름": 수량},
+  "inventory_remove": {"아이템이름": 수량},
+  "gold_change": 100,
+  "status_add": ["상태이상"],
+  "status_remove": ["해제된상태"],
+  "relationship_update": {"NPC이름": "관계 설명 (예: 친구가 됨, 적대적)"},
+  "passive_add": ["새로운 패시브/칭호"],
+  "info_add": ["새로 알게 된 정보"],
+  "foreshadow_add": ["복선/떡밥"],
+  "adaptation_update": {"비일상요소": "적응 단계"}
+}
+```
+
+### UPDATE RULES
+- **inventory_add/remove**: 아이템 획득/소비/분실 시
+- **gold_change**: 돈 획득(+) 또는 지출(-) 시
+- **status_add/remove**: 상태이상(중독, 출혈, 피로 등) 발생/해제 시
+- **relationship_update**: NPC와의 관계 변화 시 (첫 만남, 친해짐, 적대 등)
+- **passive_add**: 특별한 성취나 반복 경험으로 패시브/칭호 획득 시
+- **info_add**: 중요한 정보를 알게 되었을 때 (비밀, 단서, 위치 등)
+- **foreshadow_add**: 미해결 복선/떡밥이 생겼을 때
+- **adaptation_update**: 비일상적 요소에 대한 적응도 변화 시
+
+### APPEARANCE VS COMPANIONS (외형 vs 동행자)
+**CRITICAL:** 캐릭터 외형(appearance)과 동행 동물/펫은 다릅니다!
+- **외형(appearance)**: 캐릭터 본인의 신체적 특징만! (머리색, 눈색, 체격, 흉터, 복장 등)
+- **companions(동행자)**: 펫, 사역수, 탈 것 등은 별도 필드로!
+  - info_add에 "동행자: [이름] - [설명]" 형식으로 기록
+  - 또는 relationship_update에 "펫이름": "사역수, 충성적" 형식으로 기록
+
+### EXAMPLES
+**아이템 획득:** 
+나레이션: "검을 주웠다" → inventory_add: {"검": 1}
+
+**관계 변화:**
+나레이션: "리엘이 미소 지었다" → relationship_update: {"리엘": "호감을 보임"}
+
+**펫/동물 동행:**
+나레이션: "늑대가 따르기 시작했다" → relationship_update: {"섀도우": "길들여진 늑대, 충성적"} 또는 info_add: ["동행자: 섀도우(늑대) - 숲에서 구해준 뒤 따르고 있음"]
+
+**상태이상:**
+나레이션: "독이 퍼졌다" → status_add: ["중독"]
+
+**정보 획득:**
+나레이션: "비밀 통로를 발견했다" → info_add: ["지하실에 비밀 통로가 있음"]
+
+**변경 없음:** system_update 블록을 아예 출력하지 마세요.
 </Output_Generation_Request>
 """
 
@@ -648,7 +702,7 @@ class PromptBuilder:
         return self
     
     def set_roles(
-        self, 
+        self,
         character_descriptions: str = "",
         persona_prompt: str = ""
     ) -> 'PromptBuilder':
@@ -665,7 +719,7 @@ class PromptBuilder:
         return self
     
     def set_fermented(
-        self, 
+        self,
         episode_summary: str = "",
         deep_memory: str = ""
     ) -> 'PromptBuilder':
