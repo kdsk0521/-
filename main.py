@@ -499,6 +499,16 @@ async def handle_info_command(message, channel_id: str, sub_command: str = "") -
         if background:
             result += f"📖 **배경:** {background}\n"
         
+        # 동행자 (known_info에서 "동행자:" 접두사 가진 항목 추출)
+        known_info = ai_mem.get('known_info', [])
+        companions = [info for info in known_info if info.startswith("동행자:")]
+        if companions:
+            result += "🐾 **동행자:**\n"
+            for comp in companions:
+                # "동행자: 이름 - 설명" 형태에서 추출
+                comp_desc = comp.replace("동행자:", "").strip()
+                result += f"  • {comp_desc}\n"
+        
         # 소지품 (화폐 + 인벤토리 통합)
         economy = p.get('economy', {})
         inventory = p.get('inventory', {})
@@ -1619,13 +1629,23 @@ Track each player separately. 3rd person narration. Korean output."""
                                     if "known_info" not in ai_mem:
                                         ai_mem["known_info"] = []
                                     companions = update_json["companion_add"]
-                                    if isinstance(companions, list):
+                                    
+                                    # dict 형태: {"Shadow": "loyal wolf"}
+                                    if isinstance(companions, dict):
+                                        for name, desc in companions.items():
+                                            companion_info = f"동행자: {name} - {desc}"
+                                            if companion_info not in ai_mem["known_info"]:
+                                                ai_mem["known_info"].append(companion_info)
+                                                update_msgs.append(f"🐾 **{name}**")
+                                    # list 형태: ["Shadow the wolf"]
+                                    elif isinstance(companions, list):
                                         for companion in companions:
                                             if companion:
                                                 companion_info = f"동행자: {companion}"
                                                 if companion_info not in ai_mem["known_info"]:
                                                     ai_mem["known_info"].append(companion_info)
                                                     update_msgs.append(f"🐾 **{companion}**")
+                                    # string 형태: "Shadow"
                                     elif isinstance(companions, str):
                                         companion_info = f"동행자: {companions}"
                                         if companion_info not in ai_mem["known_info"]:
